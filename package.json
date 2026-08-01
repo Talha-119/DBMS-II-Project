@@ -1,0 +1,24 @@
+{
+  "name": "admission-system-applicant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Applicant portion of the Government School Admission System (PERN, DBMS-II). Apply, retrieve/download, result check, recover ID. Staff (school-authority/admin) portion lives in the full project.",
+  "scripts": {
+    "db:setup": "node database/migrate.js up",
+    "db:reset": "node database/migrate.js reset",
+    "backend": "npm --prefix backend run dev",
+    "frontend": "npm --prefix frontend run dev",
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"npm:backend\" \"npm:frontend\"",
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
