@@ -1,0 +1,157 @@
+:root {
+  --brand: #0b6b53;       /* deep teal-green (gov portal feel) */
+  --brand-dark: #084d3b;
+  --brand-light: #e6f2ee;
+  --ink: #1b2733;
+  --muted: #5b6b77;
+  --line: #d9e0e6;
+  --bg: #f4f6f8;
+  --danger: #b3261e;
+  --ok: #1b7f4b;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Roboto, system-ui, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  line-height: 1.5;
+}
+a { color: var(--brand-dark); }
+
+/* Header / nav */
+.site-header {
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(0,0,0,.15);
+}
+.site-header .bar {
+  max-width: 1000px; margin: 0 auto; padding: 14px 18px;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+}
+.site-header .brand { font-weight: 700; font-size: 18px; color: #fff; text-decoration: none; }
+.site-header nav { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.site-header nav a {
+  color: #eafaf3; text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 14px;
+}
+.site-header nav a:hover, .site-header nav a.active { background: rgba(255,255,255,.18); color: #fff; }
+
+main { max-width: 1000px; margin: 24px auto; padding: 0 18px; }
+
+/* Cards */
+.card {
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.card h2 { margin-top: 0; }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 16px; flex-wrap: wrap; }
+.row > * { flex: 1 1 220px; }
+
+/* Forms */
+label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+input, select, textarea {
+  width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 14px; background: #fff; color: var(--ink);
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); border-color: var(--brand); }
+input:disabled, .locked { background: #eef2f4; color: #44525e; }
+.field { margin-bottom: 14px; }
+.help { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+/* Buttons */
+button, .btn {
+  cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px;
+  font-size: 14px; font-weight: 600; background: var(--brand); color: #fff;
+}
+button:hover { background: var(--brand-dark); }
+button:disabled { background: #9bb3ab; cursor: not-allowed; }
+.btn-secondary { background: #e8edf0; color: var(--ink); }
+.btn-secondary:hover { background: #dbe2e7; }
+.btn-danger { background: var(--danger); }
+.btn-row { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+
+/* Alerts */
+.alert { padding: 11px 14px; border-radius: 8px; margin: 10px 0; font-size: 14px; }
+.alert-error { background: #fdeceb; color: var(--danger); border: 1px solid #f5c6c2; }
+.alert-ok { background: #e8f6ee; color: var(--ok); border: 1px solid #bfe6cf; }
+.alert-info { background: var(--brand-light); color: var(--brand-dark); border: 1px solid #c5e2d8; }
+
+/* Stepper */
+.stepper { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.stepper .step {
+  font-size: 12px; padding: 6px 10px; border-radius: 20px; background: #e8edf0; color: var(--muted);
+}
+.stepper .step.active { background: var(--brand); color: #fff; }
+.stepper .step.done { background: #cfe9df; color: var(--brand-dark); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { background: #f0f4f6; }
+.badge { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.badge.ADMITTED { background: #e1f4e9; color: var(--ok); }
+.badge.WAITING { background: #fff3df; color: #9a6700; }
+.badge.NOT_ADMITTED, .badge.CANCELLED { background: #fdeceb; color: var(--danger); }
+.badge.SUBMITTED { background: var(--brand-light); color: var(--brand-dark); }
+
+.hero { background: linear-gradient(135deg, var(--brand), var(--brand-dark)); color: #fff; padding: 34px; border-radius: var(--radius); margin-bottom: 18px; }
+.hero h1 { margin: 0 0 8px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 16px; }
+.tile { display: block; text-decoration: none; color: var(--ink); }
+.tile:hover { border-color: var(--brand); }
+.kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 12px; font-size: 14px; }
+.kv div:nth-child(odd) { color: var(--muted); font-weight: 600; }
+footer { max-width: 1000px; margin: 30px auto; padding: 0 18px; color: var(--muted); font-size: 13px; }
+
+/* Placeholders: clearly lighter/italic so they can't be mistaken for typed input */
+input::placeholder, textarea::placeholder { color: #aab6bf; opacity: 1; font-style: italic; }
+
+/* Inline per-field validation feedback (shown directly under the input) */
+.field-err { color: var(--danger); font-size: 12px; margin-top: 4px; }
+.field-ok  { color: var(--ok);     font-size: 12px; margin-top: 4px; font-weight: 600; }
+input.invalid, select.invalid { border-color: var(--danger); }
+input.invalid:focus, select.invalid:focus { outline-color: var(--danger); border-color: var(--danger); }
+input.valid { border-color: var(--ok); }
+
+/* Verified badge next to a label (e.g. mobile after OTP) */
+.verified { color: var(--ok); font-weight: 700; }
+.pending  { color: #9a6700; font-weight: 600; }
+
+/* Green "ready to go" button state (Send OTP when the number is valid, etc.) */
+button.btn-ready { background: var(--ok); }
+button.btn-ready:hover { background: #14663b; }
+
+/* Combobox (type-to-filter dropdown; only DB values can be committed) */
+.combo { position: relative; }
+.combo-list {
+  position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px);
+  margin: 0; padding: 4px; list-style: none; background: #fff;
+  border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.14); max-height: 240px; overflow-y: auto;
+}
+.combo-list li { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.combo-list li:hover { background: var(--brand-light); }
+.combo-list li .sub { color: var(--muted); font-size: 12px; }
+.combo-empty { padding: 8px 10px; color: var(--muted); font-size: 13px; }
+
+/* Inline quota checkboxes on a choice row */
+.qk { display: inline-flex; align-items: center; gap: 5px; margin-right: 14px; font-weight: 500; }
+.qk input { width: auto; }
+
+/* Submit-time error shown right at the confirm button (eye is already there) */
+.submit-note { margin-top: 10px; }
+.submit-note .alert { margin: 0; }
+
+/* Form-like confirmation preview (resembles the printed applicant copy) */
+.doc { border: 1px solid var(--line); border-radius: 8px; padding: 26px; background: #fff; }
+.doc .doc-title { text-align: center; margin-bottom: 2px; }
+.doc .doc-sub { text-align: center; color: var(--muted); margin: 0 0 14px; font-size: 13px; }
+.doc h4 { color: var(--brand-dark); border-bottom: 2px solid var(--brand-light); padding-bottom: 4px; margin: 18px 0 8px; font-size: 14px; }
+.doc-row { display: grid; grid-template-columns: 210px 1fr; gap: 2px 12px; padding: 3px 0; font-size: 14px; }
+.doc-row b { color: var(--muted); font-weight: 600; }
+.doc-choices { margin: 4px 0 0; padding-left: 20px; }
+.doc-choices li { margin-bottom: 4px; font-size: 14px; }
+.watermark { text-align: center; color: var(--muted); font-size: 12px; margin-top: 12px; }
