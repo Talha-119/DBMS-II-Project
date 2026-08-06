@@ -4,16 +4,24 @@
 -- join logic lives once, in the database.
 -- ============================================================================
 
+-- Dropped first because CREATE OR REPLACE cannot add/reorder columns in place
+-- (e.g. when school_type was added mid-view).
+DROP VIEW IF EXISTS vw_area_schools;
+DROP VIEW IF EXISTS vw_seat_availability;
+DROP VIEW IF EXISTS vw_applicant_copy;
+DROP VIEW IF EXISTS vw_admission_result;
+DROP VIEW IF EXISTS vw_school_dashboard;
+
 -- Schools enriched with their administrative area (drives cascading dropdowns).
 CREATE OR REPLACE VIEW vw_area_schools AS
-SELECT sch.eiin, sch.name, sch.school_gender,
+SELECT sch.eiin, sch.name, sch.school_gender, sch.school_type,
        pc.postcode, pc.division, pc.district, pc.thana
 FROM school sch
 JOIN postcode pc ON pc.postcode = sch.postcode;
 
 -- Seat rows with school + area + live per-quota availability.
 CREATE OR REPLACE VIEW vw_seat_availability AS
-SELECT se.seat_id, se.eiin, sch.name AS school_name, sch.postcode,
+SELECT se.seat_id, se.eiin, sch.name AS school_name, sch.postcode, sch.school_type,
        pc.division, pc.district, pc.thana,
        se.class_level, se.shift, se.seat_gender,
        COALESCE(SUM(sq.capacity), 0)::INT AS total_available,
@@ -25,7 +33,7 @@ FROM seat se
 JOIN school sch ON sch.eiin = se.eiin
 JOIN postcode pc ON pc.postcode = sch.postcode
 LEFT JOIN seat_quota sq ON sq.seat_id = se.seat_id
-GROUP BY se.seat_id, se.eiin, sch.name, sch.postcode,
+GROUP BY se.seat_id, se.eiin, sch.name, sch.postcode, sch.school_type,
          pc.division, pc.district, pc.thana, se.class_level, se.shift, se.seat_gender;
 
 -- The full applicant copy (everything needed to render/print the PDF form).
@@ -73,7 +81,7 @@ LEFT JOIN payment pay     ON pay.application_id = a.application_id;
 CREATE OR REPLACE VIEW vw_admission_result AS
 SELECT r.application_id, a.bc_no, bc.name AS student_name,
        r.status, r.allocated_quota, r.admitted_seat_id,
-       sch.eiin, sch.name AS school_name, se.class_level, se.shift,
+       sch.eiin, sch.name AS school_name, sch.school_type, se.class_level, se.shift,
        r.round, r.decided_at
 FROM admission_result r
 JOIN application a         ON a.application_id = r.application_id
@@ -81,5 +89,17 @@ JOIN birth_certificate bc  ON bc.bc_no = a.bc_no
 LEFT JOIN seat se          ON se.seat_id = r.admitted_seat_id
 LEFT JOIN school sch       ON sch.eiin = se.eiin;
 
--- (The per-school dashboard aggregate view used by the authority/admin portals
---  is not part of this applicant project.)
+-- Per-school dashboard aggregates for the authority/admin portals.
+CREATE OR REPLACE VIEW vw_school_dashboard AS
+SELECT sch.eiin, sch.name, sch.postcode, sch.school_type,
+       COUNT(DISTINCT se.seat_id) AS seat_rows,
+       COALESCE(SUM(sq.capacity), 0)::INT AS seats_remaining,
+       (SELECT COUNT(*) FROM application_choice ac
+          JOIN seat s2 ON s2.seat_id = ac.seat_id WHERE s2.eiin = sch.eiin) AS total_choices,
+       (SELECT COUNT(*) FROM admission_result r
+          JOIN seat s3 ON s3.seat_id = r.admitted_seat_id
+          WHERE s3.eiin = sch.eiin AND r.status = 'ADMITTED') AS admitted_count
+FROM school sch
+LEFT JOIN seat se      ON se.eiin = sch.eiin
+LEFT JOIN seat_quota sq ON sq.seat_id = se.seat_id
+GROUP BY sch.eiin, sch.name, sch.postcode, sch.school_type;

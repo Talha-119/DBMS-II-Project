@@ -50,10 +50,14 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- (Applicants are account-less; login roles for staff live in the separate
---  school-authority/admin system, so no account_role_t enum is defined here.)
+-- Login roles (applicants are account-less, so they are NOT here).
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'account_role_t') THEN
+        CREATE TYPE account_role_t AS ENUM ('SCHOOL_AUTHORITY', 'MASTER_ADMIN');
+    END IF;
+END $$;
 
--- Deletion-request workflow (applicant requests; the admin system decides).
+-- Deletion-request workflow (applicant requests, master admin decides).
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'deletion_status_t') THEN
         CREATE TYPE deletion_status_t AS ENUM ('PENDING', 'APPROVED', 'REJECTED');

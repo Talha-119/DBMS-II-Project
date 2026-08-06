@@ -9,9 +9,15 @@ router.get('/:bc', asyncHandler(async (req, res) => {
   if (!ready.rows.length || ready.rows[0].value !== 'TRUE') {
     return res.status(409).json({ error: 'Results are not published yet' });
   }
+  // Optional ?type=GOVERNMENT|NON_GOVERNMENT mirrors the portal's separate
+  // govt / non-govt result searches. WAITING rows have no school yet, so they
+  // are kept in both tracks.
+  const type = req.query.type || null;
   const { rows } = await query(
-    `SELECT application_id, status, allocated_quota, school_name, class_level, shift
-     FROM vw_admission_result WHERE bc_no = $1 ORDER BY application_id`, [req.params.bc]);
+    `SELECT application_id, status, allocated_quota, school_name, school_type, class_level, shift, round
+     FROM vw_admission_result
+     WHERE bc_no = $1 AND ($2::text IS NULL OR school_type IS NULL OR school_type = $2)
+     ORDER BY application_id`, [req.params.bc, type]);
   res.json(rows);
 }));
 

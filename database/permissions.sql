@@ -12,18 +12,15 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO admission_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO admission_app;
 GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA public TO admission_app;
 
--- Least privilege for the applicant portion: the app role only WRITES the
--- applicant's own data (student, application, application_choice, choice_quota,
--- payment, otp, deletion_request). Everything else is READ ONLY for the app:
---   * the identity registries (authoritative auto-fill sources),
---   * the quota configuration and the school/seat catalogue (seeded here;
---     owned/managed by the separate admin/authority system),
---   * admission_result and app_setting (published/toggled by the admin system).
--- Seeding runs as superuser, so these revokes don't affect it; triggers also
--- block writes to the registries (defense in depth).
+-- The app may READ the identity registries but never write them (these are the
+-- authoritative auto-fill sources; seeding is done as superuser, and triggers
+-- also block writes). NOTE: quota_type, class_eligibility and
+-- school_class_eligibility are intentionally NOT locked — they are managed
+-- configuration written at runtime through protected endpoints: quotas by the
+-- master admin, and each school's own accepted date-of-birth window by that
+-- school's authority. So the app role keeps write access to them.
 REVOKE INSERT, UPDATE, DELETE ON
-    postcode, birth_certificate, nid, quota_reference, class_eligibility,
-    quota_type, school, seat, seat_quota, admission_result, app_setting
+    postcode, birth_certificate, nid, quota_reference
     FROM admission_app;
 
 -- Make future objects (if any are added later) inherit the same defaults.

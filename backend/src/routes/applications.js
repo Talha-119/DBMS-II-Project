@@ -13,10 +13,8 @@ const { asyncHandler } = require('../utils/helpers');
 const { issueOtp, verifyOtp } = require('../services/otpService');
 const { streamApplicantCopy } = require('../utils/pdf');
 
-// Gate for applicant-copy access. requireAuth verifies the applicant JWT and
-// sets req.user; ensureCanAccess then authorizes by ownership. This project
-// issues applicant tokens only — staff tokens belong to the separate
-// school-authority/master-admin system and are not honoured here.
+// Gate for applicant-copy access. requireAuth verifies the JWT (applicant token
+// or staff token) and sets req.user; ensureCanAccess then authorizes by ownership.
 const applicantAccess = requireAuth;
 
 async function fetchCopy(applicationId) {
@@ -26,6 +24,7 @@ async function fetchCopy(applicationId) {
 
 async function ensureCanAccess(req, copy) {
   if (!copy) return { ok: false, status: 404, error: 'Application not found' };
+  if (req.user && req.user.role === 'MASTER_ADMIN') return { ok: true };
   if (req.user && req.user.scope === 'applicant' && req.user.bc_no === copy.bc_no) return { ok: true };
   return { ok: false, status: 403, error: 'Forbidden' };
 }

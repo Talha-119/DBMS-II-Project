@@ -2,10 +2,12 @@
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 
-// Verify the Bearer token and attach req.user. In the applicant portion this
-// guards the download/PDF endpoints: after Birth-Cert + DOB + mobile-OTP
-// verification, the retrieve route issues a short-lived, application-scoped JWT
-// (signed with JWT_SECRET) that the client sends back to fetch the applicant copy.
+// Sign a session token for a privileged account (school authority / master admin).
+function signToken(payload) {
+  return jwt.sign(payload, env.JWT_SECRET, { expiresIn: env.JWT_EXPIRES_IN });
+}
+
+// Verify the Bearer token and attach req.user. Used for authority/admin routes.
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -18,4 +20,14 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { requireAuth };
+// Restrict to specific role(s). Use after requireAuth.
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden: insufficient role' });
+    }
+    next();
+  };
+}
+
+module.exports = { signToken, requireAuth, requireRole };

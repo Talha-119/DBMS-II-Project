@@ -17,13 +17,17 @@ export default function Home() {
           <h2>📝 New Application</h2>
           <p className="muted">Verify your birth certificate, pick schools, and submit. Get an Applicant ID + PDF copy.</p>
         </Link>
+        <Link to="/seats" className="card tile">
+          <h2>🪑 Vacant Seats</h2>
+          <p className="muted">Browse available seats by area, class and gender before applying.</p>
+        </Link>
         <Link to="/retrieve" className="card tile">
           <h2>⬇️ Download / Delete</h2>
           <p className="muted">Retrieve your application with Birth Cert + DOB + mobile OTP. Download the PDF or request deletion.</p>
         </Link>
         <Link to="/result" className="card tile">
           <h2>🎯 Check Result</h2>
-          <p className="muted">See your lottery result once admissions are published.</p>
+          <p className="muted">See your lottery result — merit list and waiting lists — once published.</p>
         </Link>
         <Link to="/recover" className="card tile">
           <h2>🔑 Recover Applicant ID</h2>
@@ -35,8 +39,9 @@ export default function Home() {
         <h2>Demo data (for testing)</h2>
         <p className="muted">This is a course demo. OTP codes are shown on screen instead of being sent by SMS.</p>
         <ul className="muted">
-          <li>Sample birth-certificate numbers: <b>BC3001 … BC3016</b> (e.g. BC3001 is age-eligible for Class 3).</li>
-          <li>Areas: <b>1000</b> Motijheel, <b>1206</b> Cantonment, <b>1217</b> Ramna, <b>1212</b> Gulshan.</li>
+          <li>Sample birth-certificate numbers: <b>BC3001 … BC3012</b> (e.g. BC3001 is age-eligible for Class 3).</li>
+          <li>Areas: <b>1000</b> Motijheel, <b>1206</b> Cantonment, <b>1217</b> Ramna.</li>
+          <li>Staff: master admin <b>admin / admin123</b>; school authority <b>108103 / school123</b>.</li>
         </ul>
       </div>
     </>

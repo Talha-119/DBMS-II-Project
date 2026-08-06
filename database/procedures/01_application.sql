@@ -42,6 +42,8 @@ DECLARE
     v_quota_list JSONB;
     v_qrec       JSONB;
     v_nquota     INT;
+    v_win_min    DATE;
+    v_win_max    DATE;
 BEGIN
     -- 1. Identity comes from the birth-certificate registry (never typed).
     SELECT dob, gender INTO v_dob, v_gender FROM birth_certificate WHERE bc_no = p_bc_no;
@@ -172,6 +174,18 @@ BEGIN
         IF v_seat.class_level <> p_desired_class THEN
             RAISE EXCEPTION 'Seat % is for class %, not the desired class %',
                 v_seat_id, v_seat.class_level, p_desired_class USING ERRCODE = '23514';
+        END IF;
+
+        -- The chosen school may have narrowed the national age window for this
+        -- class. Step 4 already passed the national check, so this only rejects
+        -- students who fall outside THIS school's stricter criteria.
+        IF NOT fn_is_class_eligible_at_school(v_dob, p_desired_class, v_seat.eiin) THEN
+            SELECT min_dob, max_dob INTO v_win_min, v_win_max
+            FROM fn_school_class_window(v_seat.eiin, p_desired_class);
+            RAISE EXCEPTION
+                'Student (DOB %) is outside school %''s accepted window %..% for class %',
+                v_dob, v_seat.eiin, v_win_min, v_win_max, p_desired_class
+                USING ERRCODE = '23514';
         END IF;
 
         -- Seat must be in the applying area.
