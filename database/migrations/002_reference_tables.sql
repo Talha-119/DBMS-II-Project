@@ -13,21 +13,34 @@ CREATE TABLE IF NOT EXISTS postcode (
     thana     VARCHAR(50)  NOT NULL
 );
 
+-- National ID registry. The authoritative record of an adult's identity.
+-- Declared before birth_certificate, which references it for parentage.
+CREATE TABLE IF NOT EXISTS nid (
+    nid   VARCHAR(20)  PRIMARY KEY CHECK (nid ~ '^[0-9]{10,17}$'),
+    name  VARCHAR(100) NOT NULL
+);
+
 -- National birth-certificate registry. Auto-fills name/dob/gender/parents.
+--
+-- Parentage is recorded as a NID REFERENCE, not as a name. Names are not
+-- identities: in this registry alone, 25 names are shared by up to 8 different
+-- citizens each, so a name match cannot tell one person from another. Storing
+-- the NID makes "is this the applicant's father?" an identity comparison
+-- (fn_check_guardian) instead of a string comparison that any same-named
+-- stranger could satisfy.
+--
+-- The parent's *name* is therefore derived, never stored: join nid on
+-- father_nid / mother_nid wherever a human-readable name is displayed (the
+-- apply form, the applicant copy, the PDF). This also removes the update
+-- anomaly of holding the same person's name in two tables.
 CREATE TABLE IF NOT EXISTS birth_certificate (
     bc_no        VARCHAR(20) PRIMARY KEY,
     name         VARCHAR(100) NOT NULL,
     dob          DATE         NOT NULL,
-    father_name  VARCHAR(100) NOT NULL,
-    mother_name  VARCHAR(100) NOT NULL,
+    father_nid   VARCHAR(20)  NOT NULL REFERENCES nid(nid),
+    mother_nid   VARCHAR(20)  NOT NULL REFERENCES nid(nid),
     gender       gender_t     NOT NULL,
     postcode     CHAR(4)      NOT NULL REFERENCES postcode(postcode)
-);
-
--- National ID registry. Auto-fills/validates parent & guardian names.
-CREATE TABLE IF NOT EXISTS nid (
-    nid   VARCHAR(20)  PRIMARY KEY CHECK (nid ~ '^[0-9]{10,17}$'),
-    name  VARCHAR(100) NOT NULL
 );
 
 -- Quota types kept as a LOOKUP TABLE (not a hard enum) so new quotas can be

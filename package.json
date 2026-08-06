@@ -6,6 +6,7 @@
   "scripts": {
     "db:setup": "node database/migrate.js up",
     "db:reset": "node database/migrate.js reset",
+    "db:check": "node database/migrate.js check",
     "backend": "npm --prefix backend run dev",
     "frontend": "npm --prefix frontend run dev",
     "dev": "concurrently -n backend,frontend -c blue,magenta \"npm:backend\" \"npm:frontend\"",

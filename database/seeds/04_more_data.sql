@@ -22,11 +22,13 @@ INSERT INTO nid (nid, name) VALUES
     ('19920000000000016', 'ROKSANA PARVIN')
 ON CONFLICT (nid) DO NOTHING;
 
-INSERT INTO birth_certificate (bc_no, name, dob, father_name, mother_name, gender, postcode) VALUES
-    ('BC3013', 'IMRAN KHAN',    DATE '2018-05-05', 'MD. FORHAD HOSSAIN', 'TAHMINA AKTER',  'MALE',   '1212'),
-    ('BC3014', 'AYESHA SIDDIKA',DATE '2017-06-06', 'MD. ANISUR RAHMAN',  'SULTANA RAZIA',  'FEMALE', '1212'),
-    ('BC3015', 'NABIL AHMED',   DATE '2015-07-07', 'MD. BELAL HOSSAIN',  'KHADIJA BEGUM',  'MALE',   '1212'),
-    ('BC3016', 'MARIA ISLAM',   DATE '2019-08-08', 'MD. JASIM UDDIN',    'ROKSANA PARVIN', 'FEMALE', '1212')
+-- Parentage by NID reference; names come from the `nid` rows seeded just above.
+INSERT INTO birth_certificate (bc_no, name, dob, father_nid, mother_nid, gender, postcode) VALUES
+    -- father / mother                                MD. FORHAD HOSSAIN   TAHMINA AKTER
+    ('BC3013', 'IMRAN KHAN',    DATE '2018-05-05', '19910000000000013', '19920000000000013', 'MALE',   '1212'),
+    ('BC3014', 'AYESHA SIDDIKA',DATE '2017-06-06', '19910000000000014', '19920000000000014', 'FEMALE', '1212'),
+    ('BC3015', 'NABIL AHMED',   DATE '2015-07-07', '19910000000000015', '19920000000000015', 'MALE',   '1212'),
+    ('BC3016', 'MARIA ISLAM',   DATE '2019-08-08', '19910000000000016', '19920000000000016', 'FEMALE', '1212')
 ON CONFLICT (bc_no) DO NOTHING;
 
 INSERT INTO school (eiin, name, postcode, school_gender) VALUES

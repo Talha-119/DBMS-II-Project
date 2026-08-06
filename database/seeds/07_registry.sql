@@ -51,13 +51,23 @@ ON CONFLICT (ref_id) DO NOTHING;
 -- ---- National birth registry: one registered child per district Sadar --------
 -- DOBs spread across 2011-2019 so different children map to different classes.
 -- These are registry rows only; nobody has applied (zero rows in application).
-INSERT INTO birth_certificate (bc_no, name, dob, father_name, mother_name, gender, postcode)
+-- Parentage is a NID reference, so each certificate names a specific citizen
+-- rather than a string that up to 4 citizens in this registry answer to.
+--
+-- The NIDs are computed from the same '1985…' band generated above, where an
+-- EVEN sequence number carries a male name and an ODD one a female name. Taking
+-- (2k) as the father and (2k+1) as the mother therefore stays gender-coherent
+-- and is guaranteed to exist. k cycles over 25 values, so certificates 25 apart
+-- share a parent — siblings, in effect — while the registry itself still holds
+-- 4 different citizens per name, which is exactly the ambiguity that makes a
+-- name-based guardian check unsafe and a NID-based one sound.
+INSERT INTO birth_certificate (bc_no, name, dob, father_nid, mother_nid, gender, postcode)
 SELECT
     'BC4' || lpad(d.rn::TEXT, 3, '0'),
     n.children[1 + (d.rn % array_length(n.children, 1))],
     make_date((2011 + (d.rn % 9))::INT, (1 + (d.rn % 12))::INT, (1 + (d.rn % 28))::INT),
-    n.fathers[1  + (d.rn % array_length(n.fathers, 1))],
-    n.mothers[1  + (d.rn % array_length(n.mothers, 1))],
+    '1985' || lpad((2 * (1 + (d.rn % 25)))::TEXT,     13, '0'),   -- father: even -> male
+    '1985' || lpad((2 * (1 + (d.rn % 25)) + 1)::TEXT, 13, '0'),   -- mother: odd  -> female
     (CASE WHEN d.rn % 2 = 0 THEN 'MALE' ELSE 'FEMALE' END)::gender_t,
     d.postcode
 FROM (
@@ -69,10 +79,6 @@ CROSS JOIN (
     SELECT
       ARRAY['RAHIM HASAN','TASNIM AKTER','SAMIUL ISLAM','NUSRAT JAHAN','ARIF HOSSAIN',
             'SADIA ISLAM','TANVIR AHMED','MAHIYA RAHMAN','RIDOY MIA','LAMIA AKTER',
-            'NABIL AHMED','MARIA ISLAM','FAHIM SHAHRIAR','ZARIN TASNIA']::TEXT[] AS children,
-      ARRAY['MD. ABDUL KARIM','MD. RAFIQUL ISLAM','MD. JAHANGIR ALAM','MD. NURUL AMIN',
-            'MD. HABIBUR RAHMAN','MD. DELWAR HOSSAIN','MD. ANWAR HOSSAIN','MD. SIRAJUL ISLAM']::TEXT[] AS fathers,
-      ARRAY['RAHIMA KHATUN','NASRIN AKTER','SHIRIN BEGUM','AYESHA SIDDIKA',
-            'FATEMA KHATUN','SALMA BEGUM','JAHANARA BEGUM','ROKEYA BEGUM']::TEXT[] AS mothers
+            'NABIL AHMED','MARIA ISLAM','FAHIM SHAHRIAR','ZARIN TASNIA']::TEXT[] AS children
 ) n
 ON CONFLICT (bc_no) DO NOTHING;

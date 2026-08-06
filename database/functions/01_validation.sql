@@ -28,9 +28,21 @@ $$;
 -- Enforce guardian rules for a student. Raises a descriptive exception when a
 -- rule is violated; returns normally when everything is consistent:
 --   * at least one guardian must be supplied;
---   * any supplied parent NID must exist AND its name must match the birth
---     certificate (this is the core "no info mismatch" guarantee);
+--   * any supplied parent NID must BE the NID recorded on the birth certificate
+--     (this is the core "no info mismatch" guarantee);
 --   * any supplied local-guardian NID must exist in the NID registry.
+--
+-- The parent check is an identity comparison, not a name comparison. It used to
+-- resolve the submitted NID to a name and string-match that against
+-- birth_certificate.father_name — which any same-named stranger satisfied, and
+-- in this registry up to 8 citizens share a name (BUG-002). Because the birth
+-- certificate now records the parent's NID directly, the correct check is simply
+-- whether the submitted NID *is* that one.
+--
+-- The recorded NID is deliberately NOT echoed in the error. The caller has
+-- proven nothing at this point, so a mismatch must not leak the very value it is
+-- asking for — otherwise the check degrades into an oracle that hands out the
+-- parent's national ID to anyone who knows a birth-certificate number.
 CREATE OR REPLACE FUNCTION fn_check_guardian(
     p_bc_no      TEXT,
     p_father_nid TEXT,
@@ -39,8 +51,7 @@ CREATE OR REPLACE FUNCTION fn_check_guardian(
 ) RETURNS VOID
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-    v_bc   birth_certificate%ROWTYPE;
-    v_name TEXT;
+    v_bc birth_certificate%ROWTYPE;
 BEGIN
     SELECT * INTO v_bc FROM birth_certificate WHERE bc_no = p_bc_no;
     IF NOT FOUND THEN
@@ -53,28 +64,14 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    IF p_father_nid IS NOT NULL THEN
-        v_name := fn_nid_name(p_father_nid);
-        IF v_name IS NULL THEN
-            RAISE EXCEPTION 'Father NID % not found in NID registry', p_father_nid
-                USING ERRCODE = '23503';
-        END IF;
-        IF upper(trim(v_name)) <> upper(trim(v_bc.father_name)) THEN
-            RAISE EXCEPTION 'Father name on NID (%) does not match birth certificate (%)',
-                v_name, v_bc.father_name USING ERRCODE = '23514';
-        END IF;
+    IF p_father_nid IS NOT NULL AND p_father_nid IS DISTINCT FROM v_bc.father_nid THEN
+        RAISE EXCEPTION 'The NID given as father is not the father recorded on birth certificate %', p_bc_no
+            USING ERRCODE = '23514';
     END IF;
 
-    IF p_mother_nid IS NOT NULL THEN
-        v_name := fn_nid_name(p_mother_nid);
-        IF v_name IS NULL THEN
-            RAISE EXCEPTION 'Mother NID % not found in NID registry', p_mother_nid
-                USING ERRCODE = '23503';
-        END IF;
-        IF upper(trim(v_name)) <> upper(trim(v_bc.mother_name)) THEN
-            RAISE EXCEPTION 'Mother name on NID (%) does not match birth certificate (%)',
-                v_name, v_bc.mother_name USING ERRCODE = '23514';
-        END IF;
+    IF p_mother_nid IS NOT NULL AND p_mother_nid IS DISTINCT FROM v_bc.mother_nid THEN
+        RAISE EXCEPTION 'The NID given as mother is not the mother recorded on birth certificate %', p_bc_no
+            USING ERRCODE = '23514';
     END IF;
 
     IF p_local_nid IS NOT NULL AND fn_nid_name(p_local_nid) IS NULL THEN

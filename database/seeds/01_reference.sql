@@ -29,7 +29,7 @@ INSERT INTO class_eligibility (class_level, min_dob, max_dob) VALUES
 ON CONFLICT (class_level) DO NOTHING;
 
 -- NID registry: fathers (1991...), mothers (1992...), a local guardian (1993...).
--- Names here must match the birth-certificate parent names (the match is enforced).
+-- Seeded before birth_certificate, which now references these NIDs for parentage.
 INSERT INTO nid (nid, name) VALUES
     ('19910000000000001', 'MD. KAMAL HASAN'),
     ('19910000000000002', 'MD. SELIM UDDIN'),
@@ -59,19 +59,23 @@ INSERT INTO nid (nid, name) VALUES
 ON CONFLICT (nid) DO NOTHING;
 
 -- Birth-certificate registry. DOBs are chosen to fall inside class windows.
-INSERT INTO birth_certificate (bc_no, name, dob, father_name, mother_name, gender, postcode) VALUES
-    ('BC3001', 'RAHIM HASAN',   DATE '2018-03-10', 'MD. KAMAL HASAN',     'FARHANA AKTER',   'MALE',   '1000'),
-    ('BC3002', 'KAMRUN NAHAR',  DATE '2015-02-11', 'MD. SELIM UDDIN',     'RUKEYA BEGUM',    'FEMALE', '1217'),
-    ('BC3003', 'SAMIUL ISLAM',  DATE '2018-09-05', 'MD. NURUL ISLAM',     'SALMA KHATUN',    'MALE',   '1206'),
-    ('BC3004', 'NUSRAT JAHAN',  DATE '2017-03-18', 'MD. AZIZUL HAQUE',    'NASRIN SULTANA',  'FEMALE', '1000'),
-    ('BC3005', 'TASNIM AKTER',  DATE '2019-01-09', 'MD. RAFIQUL ISLAM',   'SHAHINUR BEGUM',  'FEMALE', '1217'),
-    ('BC3006', 'ARIF HOSSAIN',  DATE '2014-11-12', 'MD. IMRAN HOSSAIN',   'MORIUM BEGUM',    'MALE',   '1206'),
-    ('BC3007', 'MEHEDI HASAN',  DATE '2012-05-20', 'MD. MAHBUB ALAM',     'MAHFUZA AKTER',   'MALE',   '1000'),
-    ('BC3008', 'SADIA ISLAM',   DATE '2018-08-02', 'MD. SAIFUR RAHMAN',   'JANNATARA BEGUM', 'FEMALE', '1217'),
-    ('BC3009', 'TANVIR AHMED',  DATE '2015-06-15', 'MD. TOFAZZAL HOSSAIN','AYESHA SIDDIKA',  'MALE',   '1000'),
-    ('BC3010', 'MAHIYA RAHMAN', DATE '2011-10-30', 'MD. ABDUR RAHMAN',    'RAHIMA KHATUN',   'FEMALE', '1206'),
-    ('BC3011', 'RIDOY MIA',     DATE '2018-12-12', 'MD. JAHANGIR ALAM',   'NILUFA YASMIN',   'MALE',   '1217'),
-    ('BC3012', 'LAMIA AKTER',   DATE '2019-04-04', 'MD. SHAHIN MIA',      'SHIRIN AKTER',    'FEMALE', '1000')
+-- Parentage is a NID reference (see 002_reference_tables.sql): the father/mother
+-- columns hold the parent's NID, and their name is derived by joining `nid`.
+-- The commented names are for readers of this file only.
+INSERT INTO birth_certificate (bc_no, name, dob, father_nid, mother_nid, gender, postcode) VALUES
+    -- father / mother                                MD. KAMAL HASAN      FARHANA AKTER
+    ('BC3001', 'RAHIM HASAN',   DATE '2018-03-10', '19910000000000001', '19920000000000001', 'MALE',   '1000'),
+    ('BC3002', 'KAMRUN NAHAR',  DATE '2015-02-11', '19910000000000002', '19920000000000002', 'FEMALE', '1217'),
+    ('BC3003', 'SAMIUL ISLAM',  DATE '2018-09-05', '19910000000000003', '19920000000000003', 'MALE',   '1206'),
+    ('BC3004', 'NUSRAT JAHAN',  DATE '2017-03-18', '19910000000000004', '19920000000000004', 'FEMALE', '1000'),
+    ('BC3005', 'TASNIM AKTER',  DATE '2019-01-09', '19910000000000005', '19920000000000005', 'FEMALE', '1217'),
+    ('BC3006', 'ARIF HOSSAIN',  DATE '2014-11-12', '19910000000000006', '19920000000000006', 'MALE',   '1206'),
+    ('BC3007', 'MEHEDI HASAN',  DATE '2012-05-20', '19910000000000007', '19920000000000007', 'MALE',   '1000'),
+    ('BC3008', 'SADIA ISLAM',   DATE '2018-08-02', '19910000000000008', '19920000000000008', 'FEMALE', '1217'),
+    ('BC3009', 'TANVIR AHMED',  DATE '2015-06-15', '19910000000000009', '19920000000000009', 'MALE',   '1000'),
+    ('BC3010', 'MAHIYA RAHMAN', DATE '2011-10-30', '19910000000000010', '19920000000000010', 'FEMALE', '1206'),
+    ('BC3011', 'RIDOY MIA',     DATE '2018-12-12', '19910000000000011', '19920000000000011', 'MALE',   '1217'),
+    ('BC3012', 'LAMIA AKTER',   DATE '2019-04-04', '19910000000000012', '19920000000000012', 'FEMALE', '1000')
 ON CONFLICT (bc_no) DO NOTHING;
 
 -- Freedom-fighter references (each tied to a father's NID).

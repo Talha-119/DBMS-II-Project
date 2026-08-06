@@ -6,7 +6,6 @@ import { empty, blankArea, blankStatus, bcChanged, resetForBc } from './applySta
 const STEPS = ['Birth Certificate', 'Mobile & OTP', 'Guardians', 'Class & Address', 'Schools & Choices', 'Review'];
 const RELIGIONS = ['ISLAM', 'HINDU', 'CHRISTIAN', 'BUDDHIST', 'OTHER'];
 const MOBILE_RE = /^01[3-9][0-9]{8}$/;
-const norm = (s) => (s || '').trim().toUpperCase().replace(/\s+/g, ' ');
 
 // Shown when a returning applicant clicks a field their first application already
 // fixed. Informational only — there is no self-service path to change these.
@@ -136,33 +135,52 @@ export default function Apply() {
   }, [geo]);
 
   // --- Live guardian NID validation (debounced; re-checks whenever the NID or the
-  //     birth-certificate name changes, so a stale ✓ can never survive an edit). ---
-  async function fetchNidStatus(nid, bcName, requireMatch) {
+  //     birth certificate changes, so a stale ✓ can never survive an edit). ---
+  //
+  // A parent NID is verified by the server against the NID recorded on the birth
+  // certificate. This used to compare the NID's registered *name* against the
+  // certificate's father/mother name here in the browser — which any same-named
+  // stranger passed (BUG-002). The server answers yes/no without ever returning
+  // the recorded NID, so the form cannot be read for the answer.
+  async function fetchParentStatus(nid, bcNo, role) {
+    try {
+      const { data } = await api.get(
+        `/lookup/guardian-check?bc=${encodeURIComponent(bcNo)}&nid=${encodeURIComponent(nid)}&role=${role}`);
+      if (data.match) return { status: 'ok', name: data.name, msg: '' };
+      return {
+        status: 'err', name: data.name || '',
+        msg: data.name
+          ? `This NID belongs to ${data.name}, who is not the ${role} recorded on this birth certificate.`
+          : `NID ${nid} was not found in the registry.`,
+      };
+    } catch { return { status: 'err', name: '', msg: `Could not verify NID ${nid}.` }; }
+  }
+  // A local guardian is not on the birth certificate, so it only has to exist.
+  async function fetchLocalStatus(nid) {
     try {
       const { data } = await api.get(`/lookup/nid/${encodeURIComponent(nid)}`);
-      if (!requireMatch) return { status: 'ok', name: data.name, msg: '' };
-      return norm(data.name) === norm(bcName)
-        ? { status: 'ok', name: data.name, msg: '' }
-        : { status: 'err', name: data.name, msg: `This NID belongs to ${data.name}, which does not match the birth-certificate name (${bcName}).` };
+      return { status: 'ok', name: data.name, msg: '' };
     } catch { return { status: 'err', name: '', msg: `NID ${nid} was not found in the registry.` }; }
   }
-  function debouncedNidCheck(nid, stField, bcName, requireMatch) {
+  function debouncedNidCheck(nid, stField, check) {
     if (!nid) { up({ [stField]: blankStatus }); return undefined; }
     up({ [stField]: { status: 'checking', name: '', msg: 'Checking…' } });
     let alive = true;
     const t = setTimeout(async () => {
-      const st = await fetchNidStatus(nid, bcName, requireMatch);
+      const st = await check(nid);
       if (alive) up({ [stField]: st });
     }, 350);
     return () => { alive = false; clearTimeout(t); };
   }
-  useEffect(() => debouncedNidCheck(f.father_nid.trim(), 'father_st', f.father_name, true),
+  useEffect(() => debouncedNidCheck(f.father_nid.trim(), 'father_st',
+    (n) => fetchParentStatus(n, f.verified_bc, 'father')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [f.father_nid, f.father_name]);
-  useEffect(() => debouncedNidCheck(f.mother_nid.trim(), 'mother_st', f.mother_name, true),
+    [f.father_nid, f.verified_bc]);
+  useEffect(() => debouncedNidCheck(f.mother_nid.trim(), 'mother_st',
+    (n) => fetchParentStatus(n, f.verified_bc, 'mother')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [f.mother_nid, f.mother_name]);
-  useEffect(() => debouncedNidCheck(f.local_guardian_nid.trim(), 'local_st', '', false),
+    [f.mother_nid, f.verified_bc]);
+  useEffect(() => debouncedNidCheck(f.local_guardian_nid.trim(), 'local_st', fetchLocalStatus),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [f.local_guardian_nid]);
 

@@ -6,15 +6,49 @@ const { asyncHandler } = require('../utils/helpers');
 
 // Birth certificate -> identity (name/dob/gender/parents/area). The apply form
 // fills itself from this; the applicant never types these fields.
+//
+// Parent NAMES are joined from the NID registry for display. The parent NIDs
+// themselves are deliberately NOT returned: this endpoint is public, so
+// returning them would hand the guardian NID of any child to anyone who knows a
+// birth-certificate number — and would reduce the guardian check to copying a
+// value the form had already shown.
 router.get('/birth-cert/:bc', asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT b.bc_no, b.name, b.dob, b.gender, b.father_name, b.mother_name,
+    `SELECT b.bc_no, b.name, b.dob, b.gender,
+            f.name AS father_name, m.name AS mother_name,
             b.postcode, p.division, p.district, p.thana
      FROM birth_certificate b
      JOIN postcode p ON p.postcode = b.postcode
+     JOIN nid f ON f.nid = b.father_nid
+     JOIN nid m ON m.nid = b.mother_nid
      WHERE b.bc_no = $1`, [req.params.bc]);
   if (!rows.length) return res.status(404).json({ error: 'Birth certificate not found' });
   res.json(rows[0]);
+}));
+
+// Does this NID belong to the parent recorded on this birth certificate?
+// Powers the apply form's live ✓ / ✗ on the guardian fields, which used to
+// compare names in the browser — the same weak check the database has now
+// dropped (BUG-002).
+//
+// Answers only yes/no plus the name of the NID that was *submitted* (already
+// public via /lookup/nid). It never reveals the recorded NID, so it cannot be
+// used to look one up; a caller must already know the number to get a "true".
+router.get('/guardian-check', asyncHandler(async (req, res) => {
+  const { bc, nid, role } = req.query;
+  if (!bc || !nid || !['father', 'mother'].includes(role)) {
+    return res.status(400).json({ error: 'bc, nid and role (father|mother) are required' });
+  }
+  const { rows } = await query(
+    `SELECT n.name,
+            (b.${role === 'father' ? 'father_nid' : 'mother_nid'} = $2) AS match
+     FROM birth_certificate b
+     LEFT JOIN nid n ON n.nid = $2
+     WHERE b.bc_no = $1`, [bc, nid]);
+  if (!rows.length) return res.status(404).json({ error: 'Birth certificate not found' });
+  // A NID that isn't in the registry at all reads as "not the parent", with no
+  // separate signal — one uniform negative answer.
+  res.json({ match: rows[0].match === true, name: rows[0].name || null });
 }));
 
 // NID -> registered name (for guardian auto-fill / validation).
