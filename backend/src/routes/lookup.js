@@ -73,6 +73,14 @@ router.get('/areas', asyncHandler(async (_req, res) => {
   res.json(rows);
 }));
 
+// Every configured class with its accepted DOB window + age range. The age
+// calculator needs this for classes the applicant does NOT qualify for, so it
+// can explain exactly why (and is not limited to /eligible-classes).
+router.get('/class-eligibility', asyncHandler(async (_req, res) => {
+  const { rows } = await query('SELECT * FROM fn_class_eligibility_info()');
+  res.json(rows);
+}));
+
 // Age-eligible classes for a DOB (calls the PL/pgSQL function).
 router.get('/eligible-classes', asyncHandler(async (req, res) => {
   const { dob } = req.query;
@@ -81,28 +89,46 @@ router.get('/eligible-classes', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-// Schools (optionally in a postcode) for the cascading selector.
+// Schools (optionally in a postcode / of a track) for the cascading selector.
 router.get('/schools', asyncHandler(async (req, res) => {
-  const { postcode } = req.query;
-  const { rows } = postcode
-    ? await query('SELECT * FROM vw_area_schools WHERE postcode = $1 ORDER BY name', [postcode])
-    : await query('SELECT * FROM vw_area_schools ORDER BY division, district, thana, name');
+  const { postcode, type } = req.query;
+  const { rows } = await query(
+    `SELECT * FROM vw_area_schools
+     WHERE ($1::text IS NULL OR postcode = $1)
+       AND ($2::text IS NULL OR school_type = $2)
+     ORDER BY division, district, thana, name`,
+    [postcode || null, type || null]);
   res.json(rows);
 }));
 
 // Available seats in an area for a class, gender-compatible, capacity > 0.
 router.get('/seats', asyncHandler(async (req, res) => {
-  const { postcode, gender } = req.query;
+  const { postcode, gender, type } = req.query;
   const cls = req.query.class;
   const { rows } = await query(
     `SELECT * FROM vw_seat_availability
      WHERE ($1::text IS NULL OR postcode = $1)
        AND ($2::int  IS NULL OR class_level = $2)
        AND ($3::text IS NULL OR seat_gender::text = 'BOTH' OR seat_gender::text = $3)
+       AND ($4::text IS NULL OR school_type = $4)
        AND total_available > 0
      ORDER BY school_name, shift`,
-    [postcode || null, cls || null, gender || null]);
+    [postcode || null, cls || null, gender || null, type || null]);
   res.json(rows);
+}));
+
+// Public round status: is the admission round open, and are results published?
+// Drives the "application deadline" banner on the apply page.
+router.get('/round-status', asyncHandler(async (_req, res) => {
+  const { rows } = await query(
+    `SELECT key, value FROM app_setting
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
+  const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  res.json({
+    round_open: s.ROUND_OPEN === 'TRUE',
+    result_ready: s.RESULT_READY === 'TRUE',
+    current_round: parseInt(s.CURRENT_ROUND || '0', 10),
+  });
 }));
 
 // Quota catalogue + reference validation.
