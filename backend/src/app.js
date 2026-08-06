@@ -22,16 +22,17 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: env.GLOBAL_RATE_MAX, standardHeade
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'admission-api', time: new Date().toISOString() }));
 
-// Applicant-facing routes only. The staff routes (/api/auth, /api/authority,
-// /api/admin) belong to the school-authority + master-admin portion of the
-// system and are maintained separately; they are intentionally not mounted here.
+// Routes.
 app.use('/api/lookup', require('./routes/lookup'));
 app.use('/api/otp', require('./routes/otp'));
 app.use('/api/applications', require('./routes/applications'));
 app.use('/api/results', require('./routes/results'));
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/authority', require('./routes/authority'));
+app.use('/api/admin', require('./routes/admin'));
 
 // Production: serve the built React app (frontend/dist) for any non-API route, so
-// the applicant portion can run from a single server ("live server" deployment).
+// the whole system can run from a single server ("live server" deployment).
 const clientDist = path.resolve(__dirname, '../../frontend/dist');
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));

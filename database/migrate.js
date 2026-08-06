@@ -28,7 +28,7 @@ const cfg = {
   port: parseInt(process.env.PGPORT || '5432', 10),
   superuser: process.env.PGSUPERUSER || 'postgres',
   superpass: process.env.PGSUPERPASSWORD || 'postgres',
-  appDb: process.env.APP_DB || 'admission_applicant',
+  appDb: process.env.APP_DB || 'admission',
   appUser: process.env.APP_DB_USER || 'admission_app',
   appPass: process.env.APP_DB_PASSWORD || 'admission_app_pw',
 };

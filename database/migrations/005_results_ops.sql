@@ -1,18 +1,9 @@
 -- ============================================================================
 -- 005_results_ops.sql
--- Operational tables the applicant flow reads or writes:
---   * admission_result  -- READ ONLY here: the applicant checks their result.
---                          Rows are produced by the separate admin/authority
---                          system's seat-allocation lottery (not part of this
---                          applicant project), so this table stays empty until
---                          that system publishes results into the shared DB.
---   * deletion_request  -- the applicant asks to delete an application; the
---                          admin system approves/rejects it.
---   * otp               -- hashed one-time codes for apply/retrieve/delete/recover.
---   * app_setting       -- key/value flags the applicant reads (e.g. RESULT_READY).
+-- Lottery results + operational tables (deletion workflow, OTP, audit, settings).
 -- ============================================================================
 
--- One result row per application (written by the admin lottery; read by applicants).
+-- One result row per application after the lottery runs.
 CREATE TABLE IF NOT EXISTS admission_result (
     application_id   VARCHAR(20) PRIMARY KEY REFERENCES application(application_id) ON DELETE CASCADE,
     admitted_seat_id VARCHAR(20) REFERENCES seat(seat_id),
@@ -22,7 +13,7 @@ CREATE TABLE IF NOT EXISTS admission_result (
     decided_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Applicant asks to delete an application; the admin system approves/rejects.
+-- Applicant asks to delete an application; a master admin approves/rejects.
 CREATE TABLE IF NOT EXISTS deletion_request (
     request_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     application_id VARCHAR(20) NOT NULL REFERENCES application(application_id) ON DELETE CASCADE,
@@ -44,8 +35,19 @@ CREATE TABLE IF NOT EXISTS otp (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Generic audit trail, populated by triggers using to_jsonb (see Phase 2).
+CREATE TABLE IF NOT EXISTS audit_log (
+    log_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    table_name VARCHAR(40) NOT NULL,
+    action     VARCHAR(10) NOT NULL,           -- INSERT | UPDATE | DELETE
+    row_pk     VARCHAR(60),
+    old_data   JSONB,
+    new_data   JSONB,
+    actor      VARCHAR(60) DEFAULT current_user,
+    at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Simple key/value settings (e.g. admission round open/closed, RESULT_READY).
--- The applicant flow READS these; the admin system toggles them.
 CREATE TABLE IF NOT EXISTS app_setting (
     key        VARCHAR(40) PRIMARY KEY,
     value      VARCHAR(200) NOT NULL,
@@ -54,3 +56,4 @@ CREATE TABLE IF NOT EXISTS app_setting (
 
 CREATE INDEX IF NOT EXISTS idx_otp_mobile_purpose ON otp(mobile, purpose);
 CREATE INDEX IF NOT EXISTS idx_deletion_status    ON deletion_request(status);
+CREATE INDEX IF NOT EXISTS idx_audit_table        ON audit_log(table_name, at);
