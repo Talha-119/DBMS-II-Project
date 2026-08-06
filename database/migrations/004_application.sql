@@ -9,6 +9,16 @@ CREATE SEQUENCE IF NOT EXISTS seq_application START WITH 1;
 
 -- Reusable per-student profile (keyed by birth certificate). A student can file
 -- several applications; their profile is filled once.
+--
+-- desired_class and prev_school_name live here, not on `application`. Both are
+-- functionally dependent on the student, not on the individual application: for
+-- one admission session a child is admitted into one class, and their previous
+-- school is a fact about their history. Holding them per-application allowed one
+-- student to file for class 6 in one area and class 7 in another (the eligibility
+-- ranges overlap by design, so ~44% of the registry qualifies for two classes) —
+-- which multiplies their lottery entries and burns seat choices in both. Keeping
+-- them on `student` makes that contradiction unrepresentable rather than merely
+-- forbidden, and the profile lock covers them automatically.
 CREATE TABLE IF NOT EXISTS student (
     bc_no               VARCHAR(20) PRIMARY KEY REFERENCES birth_certificate(bc_no),
     religion            religion_t  NOT NULL,
@@ -20,6 +30,8 @@ CREATE TABLE IF NOT EXISTS student (
     present_detail      VARCHAR(200) NOT NULL,
     permanent_postcode  CHAR(4)     NOT NULL REFERENCES postcode(postcode),
     permanent_detail    VARCHAR(200) NOT NULL,
+    desired_class       INT         NOT NULL REFERENCES class_eligibility(class_level),
+    prev_school_name    VARCHAR(120),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- At least one guardian (parent or local) must be present.
@@ -28,12 +40,12 @@ CREATE TABLE IF NOT EXISTS student (
     )
 );
 
+-- What genuinely varies per application: where the student is applying, and the
+-- seat choices/quotas they claim there.
 CREATE TABLE IF NOT EXISTS application (
     application_id    VARCHAR(20) PRIMARY KEY,
     bc_no             VARCHAR(20) NOT NULL REFERENCES student(bc_no),
     applying_postcode CHAR(4)     NOT NULL REFERENCES postcode(postcode),
-    desired_class     INT         NOT NULL REFERENCES class_eligibility(class_level),
-    prev_school_name  VARCHAR(120),
     status            application_status_t NOT NULL DEFAULT 'SUBMITTED',
     round             INT         NOT NULL DEFAULT 1,
     submitted_at      TIMESTAMPTZ NOT NULL DEFAULT now()

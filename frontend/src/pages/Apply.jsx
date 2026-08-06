@@ -1,26 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import api, { apiError } from '../api/client';
 import { Alert, Stepper, Field, Combobox } from '../components/ui.jsx';
+import { empty, blankArea, blankStatus, bcChanged, resetForBc } from './applyState.js';
 
 const STEPS = ['Birth Certificate', 'Mobile & OTP', 'Guardians', 'Class & Address', 'Schools & Choices', 'Review'];
 const RELIGIONS = ['ISLAM', 'HINDU', 'CHRISTIAN', 'BUDDHIST', 'OTHER'];
 const MOBILE_RE = /^01[3-9][0-9]{8}$/;
 const norm = (s) => (s || '').trim().toUpperCase().replace(/\s+/g, ' ');
-const blankArea = { division: '', district: '', thana: '', postcode: '' };
-const blankStatus = { status: '', name: '', msg: '' };
 
-const empty = {
-  bc_no: '', name: '', dob: '', gender: '', father_name: '', mother_name: '', returning: false,
-  religion: 'ISLAM', mobile: '',
-  otp_sent: false, otp_mobile: '', otp_code: '', otp_verified: false, apply_token: '',
-  father_nid: '', mother_nid: '', local_guardian_nid: '',
-  father_st: blankStatus, mother_st: blankStatus, local_st: blankStatus,
-  desired_class: '', eligibleClasses: [],
-  present: { ...blankArea }, present_detail: '',
-  permanent: { ...blankArea }, permanent_detail: '',
-  prev_school_name: '',
-  applying: { ...blankArea }, seats: [], choices: [],
-};
+// Shown when a returning applicant clicks a field their first application already
+// fixed. Informational only — there is no self-service path to change these.
+const LOCK_MSG = 'Your previous application has already confirmed this information, so it cannot be changed here. Contact the admissions office if it needs correcting.';
+const LOCK_HELP = 'Locked — confirmed by your first application.';
 
 // Build in-memory geography helpers from the /lookup/areas rows (only DB values).
 function buildGeo(rows) {
@@ -37,8 +28,25 @@ function buildGeo(rows) {
 
 // Cascading Division -> District -> Thana + Postcode. Fills either direction and
 // re-validates on every change; only values that exist in the DB can be committed.
-function AddressPicker({ geo, value, onChange }) {
+function AddressPicker({ geo, value, onChange, locked, onLockedClick }) {
   if (!geo) return <p className="muted">Loading areas…</p>;
+  // Returning applicant: the address is part of the locked profile, so it is shown
+  // as plain read-only text rather than as pickers there is no point in opening.
+  if (locked) {
+    const ro = { readOnly: true, className: 'locked', onMouseDown: onLockedClick, onFocus: onLockedClick };
+    return (
+      <>
+        <div className="row">
+          <Field label="Division"><input value={value.division} {...ro} /></Field>
+          <Field label="District"><input value={value.district} {...ro} /></Field>
+        </div>
+        <div className="row">
+          <Field label="Thana / Upazila"><input value={value.thana} {...ro} /></Field>
+          <Field label="Postcode" help={LOCK_HELP}><input value={value.postcode} {...ro} /></Field>
+        </div>
+      </>
+    );
+  }
   const districts = value.division ? geo.districtsOf(value.division) : [];
   const thanas = (value.division && value.district) ? geo.thanasOf(value.division, value.district) : [];
   const setPostcode = (raw) => {
@@ -94,12 +102,22 @@ export default function Apply() {
   const [submitErr, setSubmitErr] = useState([]);
   const [geo, setGeo] = useState(null);
   const [schoolNames, setSchoolNames] = useState([]);
+  const [lockNote, setLockNote] = useState('');
 
   const fRef = useRef(f); fRef.current = f;
   const ffTimers = useRef({});
 
   const up = (patch) => setF((s) => ({ ...s, ...patch }));
-  const clear = () => { setErr(''); setMsg(''); };
+  const clear = () => { setErr(''); setMsg(''); setLockNote(''); };
+
+  // A returning applicant's profile (religion, mobile, guardians, addresses) was
+  // fixed by their first application and is immutable — the procedure and a
+  // trigger both reject a change. The form makes that visible instead of letting
+  // the applicant type a value that will only be rejected on submit. Only the
+  // per-application half stays editable: class, previous school, area, choices.
+  const locked = f.returning;
+  const noteLocked = () => setLockNote(LOCK_MSG);
+  const lockRO = { readOnly: true, className: 'locked', onMouseDown: noteLocked, onFocus: noteLocked };
 
   // Load geography + school names once (drives the dropdowns / suggestions).
   useEffect(() => {
@@ -161,6 +179,7 @@ export default function Apply() {
       const { data } = await api.get(`/lookup/birth-cert/${encodeURIComponent(bc)}`);
       const elig = await api.get(`/lookup/eligible-classes?dob=${data.dob.slice(0, 10)}`);
       const patch = {
+        bc_no: bc, verified_bc: bc,
         name: data.name, dob: data.dob.slice(0, 10), gender: data.gender,
         father_name: data.father_name, mother_name: data.mother_name,
         eligibleClasses: elig.data, returning: false,
@@ -174,10 +193,13 @@ export default function Apply() {
         patch.father_nid = st.father_nid || ''; patch.mother_nid = st.mother_nid || ''; patch.local_guardian_nid = st.local_guardian_nid || '';
         patch.present = areaFor(st.present_postcode); patch.present_detail = st.present_detail || '';
         patch.permanent = areaFor(st.permanent_postcode); patch.permanent_detail = st.permanent_detail || '';
+        // Class and previous school are student attributes too — one child is
+        // admitted into one class per session, and their school history is fixed.
+        patch.desired_class = String(st.desired_class || ''); patch.prev_school_name = st.prev_school_name || '';
       } catch { /* first-time applicant — nothing to pre-fill */ }
       up(patch);
       setMsg(patch.returning
-        ? `Welcome back, ${data.name}. Your saved personal details are pre-filled — just verify your mobile (OTP) and pick your new area & schools.`
+        ? `Welcome back, ${data.name}. Your personal details were confirmed by your earlier application and are locked — verify your registered mobile (OTP), then pick your new area & schools.`
         : `Verified: ${data.name} (${data.gender}, born ${data.dob.slice(0, 10)}).`);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
@@ -329,6 +351,14 @@ export default function Apply() {
 
   const nidField = (label, help, nidKey, stKey) => {
     const st = f[stKey];
+    if (locked) {
+      return (
+        <Field label={label} help={LOCK_HELP}>
+          <input value={f[nidKey]} placeholder="— none registered —" {...lockRO} />
+          {st.status === 'ok' && <div className="field-ok">✓ {st.name}</div>}
+        </Field>
+      );
+    }
     return (
       <Field label={label} help={help}>
         <input value={f[nidKey]} inputMode="numeric" maxLength={17} placeholder="e.g. 19910000000000001"
@@ -347,11 +377,24 @@ export default function Apply() {
       <Stepper steps={STEPS} current={step} />
       {err && <Alert kind="error">{err}</Alert>}
       {msg && <Alert kind="info">{msg}</Alert>}
+      {lockNote && <Alert kind="info">🔒 {lockNote}</Alert>}
 
       {step === 0 && (
         <>
           <Field label="Birth Certificate Number" help="Try BC3001 … BC3016 in this demo.">
-            <input value={f.bc_no} onChange={(e) => up({ bc_no: e.target.value })} placeholder="BC3001" />
+            <input value={f.bc_no} placeholder="BC3001"
+              onChange={(e) => {
+                const v = e.target.value;
+                // Editing a verified certificate invalidates the whole session:
+                // every field below is derived from it. Same rule as the mobile.
+                if (bcChanged(f, v)) {
+                  setF(resetForBc(v));
+                  setStep(0); setErr(''); setLockNote('');
+                  setMsg('Birth certificate changed — everything from the previous certificate has been cleared. Verify the new one to continue.');
+                } else {
+                  up({ bc_no: v });
+                }
+              }} />
           </Field>
           <div className="btn-row">
             <button className={f.bc_no.trim() ? 'btn-ready' : ''} onClick={verifyBC} disabled={busy || !f.bc_no.trim()}>Verify &amp; auto-fill</button>
@@ -371,19 +414,30 @@ export default function Apply() {
 
       {step === 1 && (
         <>
-          <Field label="Religion">
-            <select value={f.religion} onChange={(e) => up({ religion: e.target.value })}>
-              {RELIGIONS.map((r) => <option key={r}>{r}</option>)}
-            </select>
+          <Field label="Religion" help={locked ? LOCK_HELP : undefined}>
+            {locked
+              ? <input value={f.religion} {...lockRO} />
+              : (
+                <select value={f.religion} onChange={(e) => up({ religion: e.target.value })}>
+                  {RELIGIONS.map((r) => <option key={r}>{r}</option>)}
+                </select>
+              )}
           </Field>
-          <Field label={<>Mobile Number {otpDone && <span className="verified">✓ verified</span>}</>} help="Bangladeshi format: 01XXXXXXXXX (11 digits). Digits only.">
-            <input value={f.mobile} inputMode="numeric" maxLength={11} placeholder="01712345678"
-              className={f.mobile.length ? (mobileValid ? 'valid' : 'invalid') : ''}
-              onChange={(e) => {
-                const v = e.target.value.replace(/\D/g, '').slice(0, 11);
-                up({ mobile: v, ...(v !== f.otp_mobile ? { otp_sent: false, otp_verified: false, apply_token: '', otp_code: '' } : {}) });
-              }} />
-            {mobileErr && <div className="field-err">{mobileErr}</div>}
+          <Field label={<>Mobile Number {otpDone && <span className="verified">✓ verified</span>}</>}
+            help={locked
+              ? 'Locked — every application under this birth certificate uses the mobile registered on your first one. Verify it with an OTP to continue.'
+              : 'Bangladeshi format: 01XXXXXXXXX (11 digits). Digits only.'}>
+            {locked ? <input value={f.mobile} {...lockRO} /> : (
+              <>
+                <input value={f.mobile} inputMode="numeric" maxLength={11} placeholder="01712345678"
+                  className={f.mobile.length ? (mobileValid ? 'valid' : 'invalid') : ''}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\D/g, '').slice(0, 11);
+                    up({ mobile: v, ...(v !== f.otp_mobile ? { otp_sent: false, otp_verified: false, apply_token: '', otp_code: '' } : {}) });
+                  }} />
+                {mobileErr && <div className="field-err">{mobileErr}</div>}
+              </>
+            )}
           </Field>
           <div className="btn-row">
             <button className={mobileValid && !otpDone ? 'btn-ready' : 'btn-secondary'} disabled={busy || !mobileValid} onClick={sendOtp}>
@@ -412,7 +466,9 @@ export default function Apply() {
 
       {step === 2 && (
         <>
-          <p className="muted">Enter a guardian NID — the registered name is checked live and must match the birth certificate. At least one guardian is required; if no parent is given, a local guardian is mandatory.</p>
+          <p className="muted">{locked
+            ? 'These guardians were registered by your first application and cannot be changed here.'
+            : 'Enter a guardian NID — the registered name is checked live and must match the birth certificate. At least one guardian is required; if no parent is given, a local guardian is mandatory.'}</p>
           <div className="row">
             {nidField('Father NID', 'Optional — must match the birth-certificate father if given.', 'father_nid', 'father_st')}
             {nidField('Mother NID', 'Optional — must match the birth-certificate mother if given.', 'mother_nid', 'mother_st')}
@@ -427,27 +483,43 @@ export default function Apply() {
 
       {step === 3 && (
         <>
-          <Field label="Desired Class" help="Only classes your child is age-eligible for are listed.">
-            <select value={f.desired_class} onChange={(e) => up({ desired_class: e.target.value })}>
-              <option value="">Select…</option>
-              {f.eligibleClasses.map((c) => <option key={c.class_level} value={c.class_level}>Class {c.class_level}</option>)}
-            </select>
+          <Field label="Desired Class"
+            help={locked
+              ? 'Locked — your first application fixed the class you are applying for this session.'
+              : 'Only classes your child is age-eligible for are listed.'}>
+            {locked
+              ? <input value={f.desired_class ? `Class ${f.desired_class}` : ''} {...lockRO} />
+              : (
+                <select value={f.desired_class} onChange={(e) => up({ desired_class: e.target.value })}>
+                  <option value="">Select…</option>
+                  {f.eligibleClasses.map((c) => <option key={c.class_level} value={c.class_level}>Class {c.class_level}</option>)}
+                </select>
+              )}
           </Field>
 
           <h3>Present Address</h3>
-          <AddressPicker geo={geo} value={f.present} onChange={(v) => up({ present: v })} />
-          <Field label="Present Address (house / road / area)">
-            <input value={f.present_detail} onChange={(e) => up({ present_detail: e.target.value })} placeholder="House 12, Road 3" />
+          <AddressPicker geo={geo} value={f.present} onChange={(v) => up({ present: v })}
+            locked={locked} onLockedClick={noteLocked} />
+          <Field label="Present Address (house / road / area)" help={locked ? LOCK_HELP : undefined}>
+            {locked
+              ? <input value={f.present_detail} {...lockRO} />
+              : <input value={f.present_detail} onChange={(e) => up({ present_detail: e.target.value })} placeholder="House 12, Road 3" />}
           </Field>
 
           <h3>Permanent Address</h3>
-          <AddressPicker geo={geo} value={f.permanent} onChange={(v) => up({ permanent: v })} />
-          <Field label="Permanent Address (house / road / area)">
-            <input value={f.permanent_detail} onChange={(e) => up({ permanent_detail: e.target.value })} placeholder="House / Road / Area" />
+          <AddressPicker geo={geo} value={f.permanent} onChange={(v) => up({ permanent: v })}
+            locked={locked} onLockedClick={noteLocked} />
+          <Field label="Permanent Address (house / road / area)" help={locked ? LOCK_HELP : undefined}>
+            {locked
+              ? <input value={f.permanent_detail} {...lockRO} />
+              : <input value={f.permanent_detail} onChange={(e) => up({ permanent_detail: e.target.value })} placeholder="House / Road / Area" />}
           </Field>
 
-          <Field label="Previous School (optional)" help="Type to search registered schools; if yours isn't listed, just type its name.">
-            <Combobox options={schoolNames} value={f.prev_school_name} onChange={(v) => up({ prev_school_name: v })} allowFreeText placeholder="Type a school name" />
+          <Field label="Previous School (optional)"
+            help={locked ? LOCK_HELP : "Type to search registered schools; if yours isn't listed, just type its name."}>
+            {locked
+              ? <input value={f.prev_school_name} placeholder="— none given —" {...lockRO} />
+              : <Combobox options={schoolNames} value={f.prev_school_name} onChange={(v) => up({ prev_school_name: v })} allowFreeText placeholder="Type a school name" />}
           </Field>
 
           <div className="btn-row">

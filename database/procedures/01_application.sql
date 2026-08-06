@@ -33,6 +33,7 @@ DECLARE
     v_quota      TEXT;
     v_ref        TEXT;
     v_seat       seat%ROWTYPE;
+    v_student    student%ROWTYPE;
     v_school_pc  CHAR(4);
     v_requires   BOOLEAN;
     v_ref_nid    TEXT;
@@ -62,26 +63,92 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    -- 5. Upsert the reusable student profile.
-    INSERT INTO student (bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
-                         present_postcode, present_detail, permanent_postcode, permanent_detail)
-    VALUES (p_bc_no, p_religion, p_mobile, p_father_nid, p_mother_nid, p_local_nid,
-            p_present_postcode, p_present_detail, p_permanent_postcode, p_permanent_detail)
-    ON CONFLICT (bc_no) DO UPDATE SET
-        religion           = EXCLUDED.religion,
-        mobile             = EXCLUDED.mobile,
-        father_nid         = EXCLUDED.father_nid,
-        mother_nid         = EXCLUDED.mother_nid,
-        local_guardian_nid = EXCLUDED.local_guardian_nid,
-        present_postcode   = EXCLUDED.present_postcode,
-        present_detail     = EXCLUDED.present_detail,
-        permanent_postcode = EXCLUDED.permanent_postcode,
-        permanent_detail   = EXCLUDED.permanent_detail;
+    -- 5. Student profile: written once by the first application, LOCKED thereafter.
+    --    A student may file as many applications as they like, but the
+    --    identity-bearing half of the form (religion, mobile, guardians, addresses)
+    --    is fixed by their first submission; only the applicant half (applying area,
+    --    desired class, previous school, seat choices, quotas) varies per application.
+    --
+    --    This must be a lock and not an upsert. Refreshing the profile on every
+    --    submission turned each re-application into a silent profile *edit*, which
+    --    (a) let one student claim the AREA quota in any number of districts by
+    --    re-pointing their present address, (b) let a guardian NID be swapped for one
+    --    holding a Freedom-Fighter reference, (c) retroactively rewrote the address
+    --    printed on already-submitted applications, since vw_applicant_copy joins
+    --    student live, and (d) let anyone who knows a birth-certificate number
+    --    re-register the mobile that authorises retrieve/delete on every earlier
+    --    application under it.
+    --
+    --    A mismatch is rejected naming the offending field rather than silently
+    --    substituting the stored value, so a tamper attempt is visible. The stored
+    --    value is deliberately NOT echoed back: the caller has to prove nothing to
+    --    reach this point, so an error must not disclose the registered mobile,
+    --    guardian NID or address of whoever owns that birth certificate.
+    SELECT * INTO v_student FROM student WHERE bc_no = p_bc_no;
+    IF FOUND THEN
+        IF v_student.religion IS DISTINCT FROM p_religion THEN
+            RAISE EXCEPTION 'Religion cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        -- One birth certificate, one registered mobile. Every application under this
+        -- bc_no is reachable from it (retrieve, delete OTP), so it is a student
+        -- attribute, not a per-application one.
+        IF v_student.mobile IS DISTINCT FROM p_mobile THEN
+            RAISE EXCEPTION 'Mobile number cannot be changed for a returning applicant; all applications under one birth certificate share the mobile registered on the first application'
+                USING ERRCODE = '23514';
+        END IF;
+        IF v_student.father_nid IS DISTINCT FROM p_father_nid THEN
+            RAISE EXCEPTION 'Father NID cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        IF v_student.mother_nid IS DISTINCT FROM p_mother_nid THEN
+            RAISE EXCEPTION 'Mother NID cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        IF v_student.local_guardian_nid IS DISTINCT FROM p_local_nid THEN
+            RAISE EXCEPTION 'Local guardian NID cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        IF v_student.present_postcode IS DISTINCT FROM p_present_postcode
+           OR btrim(v_student.present_detail) IS DISTINCT FROM btrim(p_present_detail) THEN
+            RAISE EXCEPTION 'Present address cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        IF v_student.permanent_postcode IS DISTINCT FROM p_permanent_postcode
+           OR btrim(v_student.permanent_detail) IS DISTINCT FROM btrim(p_permanent_detail) THEN
+            RAISE EXCEPTION 'Permanent address cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+        -- One child is admitted into one class per session. The eligibility
+        -- ranges overlap deliberately (a borderline-age child may pick between
+        -- two classes), but picking is not the same as filing for both: two
+        -- applications in different classes would double the student's lottery
+        -- entries and burn seat choices in each. The first application picks.
+        IF v_student.desired_class IS DISTINCT FROM p_desired_class THEN
+            RAISE EXCEPTION 'Desired class cannot be changed for a returning applicant; your first application is for class %', v_student.desired_class
+                USING ERRCODE = '23514';
+        END IF;
+        -- The previous school is a fact about the student's history, so it must
+        -- read the same on every applicant copy they hold.
+        IF btrim(coalesce(v_student.prev_school_name, '')) IS DISTINCT FROM btrim(coalesce(p_prev_school_name, '')) THEN
+            RAISE EXCEPTION 'Previous school cannot be changed for a returning applicant; it was confirmed by your first application'
+                USING ERRCODE = '23514';
+        END IF;
+    ELSE
+        INSERT INTO student (bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
+                             present_postcode, present_detail, permanent_postcode, permanent_detail,
+                             desired_class, prev_school_name)
+        VALUES (p_bc_no, p_religion, p_mobile, p_father_nid, p_mother_nid, p_local_nid,
+                p_present_postcode, p_present_detail, p_permanent_postcode, p_permanent_detail,
+                p_desired_class, p_prev_school_name);
+    END IF;
 
     -- 6. Create the application (id generated by sequence-backed function).
     p_application_id := fn_next_application_id();
-    INSERT INTO application (application_id, bc_no, applying_postcode, desired_class, prev_school_name)
-    VALUES (p_application_id, p_bc_no, p_applying_postcode, p_desired_class, p_prev_school_name);
+    -- Class and previous school now live on `student` (written above), so the
+    -- application row carries only what varies per application.
+    INSERT INTO application (application_id, bc_no, applying_postcode)
+    VALUES (p_application_id, p_bc_no, p_applying_postcode);
 
     -- 7. Choices (1..5).
     IF p_choices IS NULL OR jsonb_array_length(p_choices) = 0 THEN

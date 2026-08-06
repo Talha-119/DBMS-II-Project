@@ -43,6 +43,41 @@ CREATE OR REPLACE TRIGGER trg_choice_max_five
     BEFORE INSERT ON application_choice
     FOR EACH ROW EXECUTE FUNCTION trg_fn_choice_max_five();
 
+-- A student profile is written once, by that student's first application, and is
+-- immutable afterwards. sp_submit_application already refuses to change it on the
+-- submit path; this trigger is the backstop, so the rule holds for direct SQL too
+-- and not only for traffic that goes through the procedure.
+--
+-- Only the profile columns are frozen: created_at/updated_at stay writable so the
+-- touch trigger below (which fires after this one — BEFORE ROW triggers run in
+-- name order, and 'trg_s...' precedes 'trg_t...') is not blocked by it.
+CREATE OR REPLACE FUNCTION trg_fn_student_profile_immutable()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.bc_no              IS DISTINCT FROM OLD.bc_no
+       OR NEW.religion           IS DISTINCT FROM OLD.religion
+       OR NEW.mobile             IS DISTINCT FROM OLD.mobile
+       OR NEW.father_nid         IS DISTINCT FROM OLD.father_nid
+       OR NEW.mother_nid         IS DISTINCT FROM OLD.mother_nid
+       OR NEW.local_guardian_nid IS DISTINCT FROM OLD.local_guardian_nid
+       OR NEW.present_postcode   IS DISTINCT FROM OLD.present_postcode
+       OR NEW.present_detail     IS DISTINCT FROM OLD.present_detail
+       OR NEW.permanent_postcode IS DISTINCT FROM OLD.permanent_postcode
+       OR NEW.permanent_detail   IS DISTINCT FROM OLD.permanent_detail
+       OR NEW.desired_class      IS DISTINCT FROM OLD.desired_class
+       OR NEW.prev_school_name   IS DISTINCT FROM OLD.prev_school_name THEN
+        RAISE EXCEPTION 'Student profile % is locked by their first application and cannot be modified', OLD.bc_no
+            USING ERRCODE = '42501';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_student_profile_immutable
+    BEFORE UPDATE ON student
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_student_profile_immutable();
+
 -- Touch student.updated_at on every update.
 CREATE OR REPLACE FUNCTION trg_fn_touch_updated_at()
 RETURNS TRIGGER

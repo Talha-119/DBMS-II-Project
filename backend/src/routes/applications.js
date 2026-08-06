@@ -125,10 +125,11 @@ router.post('/retrieve',
     }
 
     const apps = await query(
-      `SELECT a.application_id, a.desired_class, a.status, a.submitted_at,
+      `SELECT a.application_id, s.desired_class, a.status, a.submitted_at,
               p.thana, p.district, p.division, a.applying_postcode,
               pay.status AS payment_status, pay.amount AS fee_amount
        FROM application a
+       JOIN student s ON s.bc_no = a.bc_no
        JOIN postcode p ON p.postcode = a.applying_postcode
        LEFT JOIN payment pay ON pay.application_id = a.application_id
        WHERE a.bc_no = $1 ORDER BY a.submitted_at DESC`, [bc_no]);

@@ -58,6 +58,13 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); border-color: var(--brand); }
 input:disabled, .locked { background: #eef2f4; color: #44525e; }
+/* Locked profile fields (returning applicant): their first application already
+   confirmed these, so they render flat and borderless — stickered to the
+   background, with no input affordance. Clicking one explains why. */
+input.locked {
+  border-color: transparent; cursor: default; font-weight: 600;
+}
+input.locked:focus { outline: none; border-color: transparent; }
 .field { margin-bottom: 14px; }
 .help { font-size: 12px; color: var(--muted); margin-top: 3px; }
 

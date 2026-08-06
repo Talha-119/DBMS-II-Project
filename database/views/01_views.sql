@@ -31,7 +31,7 @@ GROUP BY se.seat_id, se.eiin, sch.name, sch.postcode,
 -- The full applicant copy (everything needed to render/print the PDF form).
 CREATE OR REPLACE VIEW vw_applicant_copy AS
 SELECT
-    a.application_id, a.submitted_at, a.status, a.desired_class, a.prev_school_name,
+    a.application_id, a.submitted_at, a.status, s.desired_class, s.prev_school_name,
     a.applying_postcode,
     ap.division AS applying_division, ap.district AS applying_district, ap.thana AS applying_thana,
     bc.bc_no, bc.name AS student_name, bc.dob, bc.gender,

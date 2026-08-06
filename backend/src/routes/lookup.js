@@ -92,7 +92,8 @@ router.get('/quota-reference/:refId', asyncHandler(async (req, res) => {
 router.get('/student/:bc', asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
-            present_postcode, present_detail, permanent_postcode, permanent_detail
+            present_postcode, present_detail, permanent_postcode, permanent_detail,
+            desired_class, prev_school_name
      FROM student WHERE bc_no = $1`, [req.params.bc]);
   if (!rows.length) return res.status(404).json({ error: 'No existing profile' });
   res.json(rows[0]);
