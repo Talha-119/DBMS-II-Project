@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# env / secrets
+.env
+*.env
+!.env.example
+
+# build output
+frontend/dist/
+backend/dist/
+*.log
+logs/
+
+# generated PDFs / tmp
+tmp/
+*.tmp
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local-only docs — working notes / status, not pushed to origin/talha
+/README.md
+/KNOWN_ISSUES.md
+/PUSH_SEQUENCE.md
