@@ -130,3 +130,33 @@ $$;
 CREATE OR REPLACE TRIGGER trg_seat_gender_consistent
     BEFORE INSERT OR UPDATE ON seat
     FOR EACH ROW EXECUTE FUNCTION trg_fn_seat_gender_consistent();
+-- A school may narrow its own accepted date-of-birth window, never widen it.
+-- sp_submit_application checks the national window first, so a school window
+-- reaching outside it could never be satisfied anyway — reject it up front with
+-- a clear message instead of silently accepting dead configuration.
+CREATE OR REPLACE FUNCTION trg_fn_school_window_within_national()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_min DATE;
+    v_max DATE;
+BEGIN
+    SELECT min_dob, max_dob INTO v_min, v_max
+    FROM class_eligibility WHERE class_level = NEW.class_level;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Class % is not configured nationally', NEW.class_level
+            USING ERRCODE = '23503';
+    END IF;
+    IF NEW.min_dob < v_min OR NEW.max_dob > v_max THEN
+        RAISE EXCEPTION
+            'School window %..% for class % is wider than the national window %..%; a school may only narrow it',
+            NEW.min_dob, NEW.max_dob, NEW.class_level, v_min, v_max
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_school_window_within_national
+    BEFORE INSERT OR UPDATE ON school_class_eligibility
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_school_window_within_national();
