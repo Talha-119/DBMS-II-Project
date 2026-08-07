@@ -14,23 +14,23 @@ export default function Home() {
 
       <div className="tiles">
         <Link to="/apply" className="card tile">
-          <h2>📝 New Application</h2>
+          <h2>New Application</h2>
           <p className="muted">Verify your birth certificate, pick schools, and submit. Get an Applicant ID + PDF copy.</p>
         </Link>
         <Link to="/seats" className="card tile">
-          <h2>🪑 Vacant Seats</h2>
+          <h2>Vacant Seats</h2>
           <p className="muted">Browse available seats by area, class and gender before applying.</p>
         </Link>
         <Link to="/retrieve" className="card tile">
-          <h2>⬇️ Download / Delete</h2>
+          <h2>Download / Delete</h2>
           <p className="muted">Retrieve your application with Birth Cert + DOB + mobile OTP. Download the PDF or request deletion.</p>
         </Link>
         <Link to="/result" className="card tile">
-          <h2>🎯 Check Result</h2>
+          <h2>Check Result</h2>
           <p className="muted">See your lottery result — merit list and waiting lists — once published.</p>
         </Link>
         <Link to="/recover" className="card tile">
-          <h2>🔑 Recover Applicant ID</h2>
+          <h2>Recover Applicant ID</h2>
           <p className="muted">Forgot your Applicant ID? Recover it with your Birth Cert + mobile OTP.</p>
         </Link>
       </div>

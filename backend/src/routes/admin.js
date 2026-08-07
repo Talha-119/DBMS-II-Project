@@ -30,8 +30,9 @@ router.post('/schools',
   }));
 
 router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
-  const r = await query('DELETE FROM school WHERE eiin = $1', [req.params.eiin]);
-  if (!r.rowCount) return res.status(404).json({ error: 'School not found' });
+  // sp_delete_school pre-checks for applications/results referencing the
+  // school and raises a clear, actionable message instead of a raw FK error.
+  await query('CALL sp_delete_school($1)', [req.params.eiin]);
   res.json({ deleted: true });
 }));
 

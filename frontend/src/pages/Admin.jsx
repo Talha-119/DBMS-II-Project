@@ -21,15 +21,28 @@ export default function Admin() {
 
   async function loadAll() {
     setErr('');
-    try {
-      const [s, st, d, r, a, q, ce, sce] = await Promise.all([
-        api.get('/admin/schools'), api.get('/admin/settings'), api.get('/admin/deletion-requests'),
-        api.get('/admin/results'), api.get('/admin/audit'), api.get('/admin/quota-types'),
-        api.get('/admin/class-eligibility'), api.get('/admin/school-class-eligibility'),
-      ]);
-      setSchools(s.data); setSettings(st.data); setDelReqs(d.data); setResults(r.data); setAudit(a.data);
-      setQuotas(q.data); setClasses(ce.data); setSchoolClasses(sce.data);
-    } catch (e) { setErr(apiError(e)); }
+    // Each panel (schools, lottery/settings, results, ...) is loaded independently:
+    // one failing endpoint (e.g. quota-types) must not blank out the others, since
+    // create/delete school, view schools, run lottery and see results are the
+    // core master-admin features and must keep working even if a side panel errors.
+    const specs = [
+      ['/admin/schools', setSchools],
+      ['/admin/settings', setSettings],
+      ['/admin/deletion-requests', setDelReqs],
+      ['/admin/results', setResults],
+      ['/admin/audit', setAudit],
+      ['/admin/quota-types', setQuotas],
+      ['/admin/class-eligibility', setClasses],
+      ['/admin/school-class-eligibility', setSchoolClasses],
+    ];
+    const outcomes = await Promise.allSettled(specs.map(([url]) => api.get(url)));
+    const failures = [];
+    outcomes.forEach((outcome, i) => {
+      const [url, setter] = specs[i];
+      if (outcome.status === 'fulfilled') setter(outcome.value.data);
+      else failures.push(`${url}: ${apiError(outcome.reason)}`);
+    });
+    if (failures.length) setErr(failures.join(' | '));
   }
 
   async function addQuota(e) {
