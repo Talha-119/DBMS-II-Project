@@ -20,14 +20,17 @@ export default function App() {
     <>
       <header className="site-header">
         <div className="bar">
-          <NavLink to="/" className="brand">🎓 GSA · School Admission</NavLink>
+          <NavLink to="/" className="brand">
+            <span className="brand-seal">GSA</span>
+            <span className="brand-text">School Admission</span>
+          </NavLink>
           <nav>
             <NavLink to="/apply">Apply</NavLink>
             <NavLink to="/seats">Vacant Seats</NavLink>
             <NavLink to="/retrieve">Download / Delete</NavLink>
             <NavLink to="/result">Result</NavLink>
             <NavLink to="/recover">Recover ID</NavLink>
-            <NavLink to="/login">Admin / School Authority Login</NavLink>
+            <NavLink to="/login" className="nav-staff">Admin / School Authority Login</NavLink>
           </nav>
         </div>
       </header>
