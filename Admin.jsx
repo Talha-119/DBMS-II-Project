@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+import DivisionAnalytics from '../components/admin/DivisionAnalytics.jsx';
+import LotteryResultsViewer from '../components/admin/LotteryResultsViewer.jsx';
 
 export default function Admin() {
   const nav = useNavigate();
   const [schools, setSchools] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
   const [settings, setSettings] = useState([]);
   const [delReqs, setDelReqs] = useState([]);
   const [results, setResults] = useState([]);
@@ -16,22 +17,34 @@ export default function Admin() {
   const [quotas, setQuotas] = useState([]);
   const [nq, setNq] = useState({ code: '', name: '', priority: '', default_share: '', requires_reference: false, is_default: false });
   const [classes, setClasses] = useState([]);
-  const [nc, setNc] = useState({ class_level: '', min_dob: '', max_dob: '' });
+  const [schoolClasses, setSchoolClasses] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
-  const filteredSchools = schools.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()) || String(s.eiin).includes(searchTerm));
   async function loadAll() {
     setErr('');
-    try {
-      const [s, st, d, r, a, q, ce] = await Promise.all([
-        api.get('/admin/schools'), api.get('/admin/settings'), api.get('/admin/deletion-requests'),
-        api.get('/admin/results'), api.get('/admin/audit'), api.get('/admin/quota-types'),
-        api.get('/admin/class-eligibility'),
-      ]);
-      setSchools(s.data); setSettings(st.data); setDelReqs(d.data); setResults(r.data); setAudit(a.data);
-      setQuotas(q.data); setClasses(ce.data);
-    } catch (e) { setErr(apiError(e)); }
+    // Each panel (schools, lottery/settings, results, ...) is loaded independently:
+    // one failing endpoint (e.g. quota-types) must not blank out the others, since
+    // create/delete school, view schools, run lottery and see results are the
+    // core master-admin features and must keep working even if a side panel errors.
+    const specs = [
+      ['/admin/schools', setSchools],
+      ['/admin/settings', setSettings],
+      ['/admin/deletion-requests', setDelReqs],
+      ['/admin/results', setResults],
+      ['/admin/audit', setAudit],
+      ['/admin/quota-types', setQuotas],
+      ['/admin/class-eligibility', setClasses],
+      ['/admin/school-class-eligibility', setSchoolClasses],
+    ];
+    const outcomes = await Promise.allSettled(specs.map(([url]) => api.get(url)));
+    const failures = [];
+    outcomes.forEach((outcome, i) => {
+      const [url, setter] = specs[i];
+      if (outcome.status === 'fulfilled') setter(outcome.value.data);
+      else failures.push(`${url}: ${apiError(outcome.reason)}`);
+    });
+    if (failures.length) setErr(failures.join(' | '));
   }
 
   async function addQuota(e) {
@@ -51,34 +64,12 @@ export default function Admin() {
     try { await api.post('/admin/quota-types/rebalance'); setMsg('All seats rebalanced to current quota %.'); loadAll(); }
     catch (e) { setErr(apiError(e)); }
   }
-  // --- Class age eligibility (accepted date-of-birth window per class) ---
   // Local date parts, not toISOString(): the API sends dates as UTC instants, so
-  // toISOString() would shift them a day back here and re-save the wrong window.
+  // toISOString() would shift them a day back when displayed here.
   const isoDate = (d) => {
     const x = new Date(d);
     return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
   };
-  async function saveClass(e) {
-    e.preventDefault(); setErr(''); setMsg('');
-    try {
-      await api.post('/admin/class-eligibility', {
-        class_level: Number(nc.class_level), min_dob: nc.min_dob, max_dob: nc.max_dob,
-      });
-      setMsg(`Class ${nc.class_level} age window saved.`);
-      setNc({ class_level: '', min_dob: '', max_dob: '' });
-      loadAll();
-    } catch (e) { setErr(apiError(e)); }
-  }
-  function editClass(c) {
-    setErr(''); setMsg('');
-    setNc({ class_level: String(c.class_level), min_dob: isoDate(c.min_dob), max_dob: isoDate(c.max_dob) });
-  }
-  async function delClass(level) {
-    if (!window.confirm(`Remove the age window for class ${level}? (Blocked if any seat uses it.)`)) return;
-    setErr(''); setMsg('');
-    try { await api.delete(`/admin/class-eligibility/${level}`); loadAll(); }
-    catch (e) { setErr(apiError(e)); }
-  }
 
   async function delQuota(code) {
     if (!window.confirm(`Delete quota ${code}? (Blocked if any seat/choice uses it.)`)) return;
@@ -149,11 +140,10 @@ export default function Admin() {
           <div style={{ alignSelf: 'end' }}><button type="submit">Create</button></div>
         </form>
         {created && <Alert kind="ok">Created EIIN <b>{created.eiin}</b> — temporary password <b>{created.temp_password}</b> (shown once).</Alert>}
-        <Field label="Search schools"><input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Name or EIIN" /></Field>
         <table style={{ marginTop: 12 }}>
           <thead><tr><th>EIIN</th><th>Name</th><th>Postcode</th><th>Seats left</th><th>Admitted</th><th></th></tr></thead>
           <tbody>
-            {filteredSchools.map((s) => (
+            {schools.map((s) => (
               <tr key={s.eiin}><td>{s.eiin}</td><td>{s.name}</td><td>{s.postcode}</td><td>{s.seats_remaining}</td><td>{s.admitted_count}</td>
                 <td><button className="btn-danger" onClick={() => deleteSchool(s.eiin)}>Delete</button></td></tr>
             ))}
@@ -191,14 +181,15 @@ export default function Admin() {
       </div>
 
       <div className="card">
-        <h3>Class age eligibility</h3>
+        <h3>Class age eligibility — national baseline (read-only)</h3>
         <p className="help">
-          The accepted date-of-birth window for each class. A student can only apply for a class if their
-          date of birth falls inside its window — this is what the public <b>Age Calculator</b> checks.
-          Age limits are shown at 1 January of the admission year. Windows may not overlap between classes.
+          The nationally accepted date-of-birth window for each class, and the outer bound every
+          school must stay inside. Admission criteria are set by each school, so this is not editable
+          here — a school authority narrows its own window from its portal. Age limits are shown at
+          1 January of the admission year.
         </p>
         <table>
-          <thead><tr><th>Class</th><th>Accepted from</th><th>Accepted to</th><th>Age limit</th><th></th></tr></thead>
+          <thead><tr><th>Class</th><th>Accepted from</th><th>Accepted to</th><th>Age limit</th></tr></thead>
           <tbody>
             {classes.map((c) => (
               <tr key={c.class_level}>
@@ -206,31 +197,31 @@ export default function Admin() {
                 <td>{isoDate(c.min_dob)}</td>
                 <td>{isoDate(c.max_dob)}</td>
                 <td>{c.min_age}-{c.max_age}</td>
-                <td className="btn-row">
-                  <button className="btn-secondary" onClick={() => editClass(c)}>Edit</button>
-                  <button className="btn-danger" onClick={() => delClass(c.class_level)}>Delete</button>
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
-        <form onSubmit={saveClass} className="row" style={{ marginTop: 12 }}>
-          <Field label="Class">
-            <select value={nc.class_level} onChange={(e) => setNc({ ...nc, class_level: e.target.value })}>
-              <option value="">Select…</option>
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((c) => <option key={c} value={c}>Class {c}</option>)}
-            </select>
-          </Field>
-          <Field label="Accepted from (earliest DOB)">
-            <input type="date" value={nc.min_dob} onChange={(e) => setNc({ ...nc, min_dob: e.target.value })} />
-          </Field>
-          <Field label="Accepted to (latest DOB)">
-            <input type="date" value={nc.max_dob} onChange={(e) => setNc({ ...nc, max_dob: e.target.value })} />
-          </Field>
-          <div style={{ alignSelf: 'end' }} className="btn-row">
-            <button type="submit" disabled={!nc.class_level || !nc.min_dob || !nc.max_dob}>Save class window</button>
-          </div>
-        </form>
+      </div>
+
+      <div className="card">
+        <h3>Schools with their own criteria ({schoolClasses.length})</h3>
+        <p className="help">Schools that have narrowed a class window below the national baseline.</p>
+        {schoolClasses.length === 0
+          ? <p className="muted">None — every school currently uses the national windows.</p>
+          : (
+            <table>
+              <thead><tr><th>EIIN</th><th>School</th><th>Class</th><th>Accepts from</th><th>Accepts to</th><th>National</th></tr></thead>
+              <tbody>
+                {schoolClasses.map((s) => (
+                  <tr key={`${s.eiin}-${s.class_level}`}>
+                    <td>{s.eiin}</td><td>{s.school_name}</td><td>Class {s.class_level}</td>
+                    <td>{isoDate(s.min_dob)}</td><td>{isoDate(s.max_dob)}</td>
+                    <td className="muted">{isoDate(s.national_min_dob)} … {isoDate(s.national_max_dob)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
       </div>
 
       <div className="card">
