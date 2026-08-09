@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+import DivisionAnalytics from '../components/admin/DivisionAnalytics.jsx';
+import LotteryResultsViewer from '../components/admin/LotteryResultsViewer.jsx';
 
 export default function Admin() {
   const nav = useNavigate();
