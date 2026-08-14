@@ -1,7 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+
+// Simple substring filter: keeps a row if `q` appears (case-insensitive) in
+// any of the given fields. Empty query keeps everything.
+function matchesQuery(row, fields, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return fields.some((f) => String(row[f] ?? '').toLowerCase().includes(needle));
+}
 
 export default function Admin() {
   const nav = useNavigate();
@@ -18,6 +26,9 @@ export default function Admin() {
   const [schoolClasses, setSchoolClasses] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [schoolSearch, setSchoolSearch] = useState('');
+  const [resultSearch, setResultSearch] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
 
   async function loadAll() {
     setErr('');
@@ -112,6 +123,21 @@ export default function Admin() {
 
   function signOut() { logout(); nav('/login'); }
 
+  const filteredSchools = useMemo(
+    () => schools.filter((s) => matchesQuery(s, ['eiin', 'name', 'postcode'], schoolSearch)),
+    [schools, schoolSearch],
+  );
+  const filteredResults = useMemo(
+    () => results.filter((r) => matchesQuery(
+      r, ['application_id', 'student_name', 'status', 'allocated_quota', 'school_name', 'class_level'], resultSearch,
+    )),
+    [results, resultSearch],
+  );
+  const filteredAudit = useMemo(
+    () => audit.filter((a) => matchesQuery(a, ['log_id', 'table_name', 'action'], auditSearch)),
+    [audit, auditSearch],
+  );
+
   return (
     <>
       <div className="card">
@@ -138,10 +164,20 @@ export default function Admin() {
           <div style={{ alignSelf: 'end' }}><button type="submit">Create</button></div>
         </form>
         {created && <Alert kind="ok">Created EIIN <b>{created.eiin}</b> — temporary password <b>{created.temp_password}</b> (shown once).</Alert>}
+        <Field label="Search schools">
+          <input
+            value={schoolSearch}
+            onChange={(e) => setSchoolSearch(e.target.value)}
+            placeholder="Search by EIIN, name, or postcode…"
+          />
+        </Field>
         <table style={{ marginTop: 12 }}>
           <thead><tr><th>EIIN</th><th>Name</th><th>Postcode</th><th>Seats left</th><th>Admitted</th><th></th></tr></thead>
           <tbody>
-            {schools.map((s) => (
+            {filteredSchools.length === 0 && (
+              <tr><td colSpan={6} className="muted">No schools match "{schoolSearch}".</td></tr>
+            )}
+            {filteredSchools.map((s) => (
               <tr key={s.eiin}><td>{s.eiin}</td><td>{s.name}</td><td>{s.postcode}</td><td>{s.seats_remaining}</td><td>{s.admitted_count}</td>
                 <td><button className="btn-danger" onClick={() => deleteSchool(s.eiin)}>Delete</button></td></tr>
             ))}
@@ -245,10 +281,20 @@ export default function Admin() {
 
       <div className="card">
         <h3>Results ({results.length})</h3>
+        <Field label="Search results">
+          <input
+            value={resultSearch}
+            onChange={(e) => setResultSearch(e.target.value)}
+            placeholder="Search by applicant, student, status, quota, school, or class…"
+          />
+        </Field>
         <table>
           <thead><tr><th>Applicant</th><th>Student</th><th>Status</th><th>Quota</th><th>School</th><th>Class</th></tr></thead>
           <tbody>
-            {results.map((r) => (
+            {filteredResults.length === 0 && (
+              <tr><td colSpan={6} className="muted">No results match "{resultSearch}".</td></tr>
+            )}
+            {filteredResults.map((r) => (
               <tr key={r.application_id}><td>{r.application_id}</td><td>{r.student_name}</td><td><Badge value={r.status} /></td><td>{r.allocated_quota || '—'}</td><td>{r.school_name || '—'}</td><td>{r.class_level || '—'}</td></tr>
             ))}
           </tbody>
@@ -257,10 +303,20 @@ export default function Admin() {
 
       <div className="card">
         <h3>Recent audit log (triggers)</h3>
+        <Field label="Search audit log">
+          <input
+            value={auditSearch}
+            onChange={(e) => setAuditSearch(e.target.value)}
+            placeholder="Search by table or action…"
+          />
+        </Field>
         <table>
           <thead><tr><th>#</th><th>Table</th><th>Action</th><th>At</th></tr></thead>
           <tbody>
-            {audit.map((a) => (
+            {filteredAudit.length === 0 && (
+              <tr><td colSpan={4} className="muted">No audit entries match "{auditSearch}".</td></tr>
+            )}
+            {filteredAudit.map((a) => (
               <tr key={a.log_id}><td>{a.log_id}</td><td>{a.table_name}</td><td>{a.action}</td><td>{new Date(a.at).toLocaleString()}</td></tr>
             ))}
           </tbody>
