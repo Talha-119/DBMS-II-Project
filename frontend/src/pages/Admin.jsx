@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+import DivisionAnalytics from '../components/admin/DivisionAnalytics.jsx';
+import LotteryResultsViewer from '../components/admin/LotteryResultsViewer.jsx';
 
 // Simple substring filter: keeps a row if `q` appears (case-insensitive) in
 // any of the given fields. Empty query keeps everything.

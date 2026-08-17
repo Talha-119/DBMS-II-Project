@@ -161,4 +161,63 @@ router.post('/settings',
     res.json({ saved: true });
   }));
 
+// Analytics: Division stats
+router.get('/analytics/division', asyncHandler(async (req, res) => {
+  const division = req.query.division;
+  const { rows } = await query(`
+    SELECT 
+      COUNT(*) AS total_choices,
+      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / COUNT(*) * 100 AS choice1_pct,
+      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / NULLIF(s.capacity,0) AS demand_ratio,
+      json_agg(json_build_object(
+        'eiin', s.eiin,
+        'school_name', s.name,
+        'capacity', s.capacity,
+        'choice1_hits', COUNT(CASE WHEN ac.preference = 1 THEN 1 END),
+        'total_hits', COUNT(*)
+      )) AS top_schools
+    FROM vw_school_dashboard s
+    JOIN application_choice ac ON ac.seat_id = s.seat_id
+    WHERE s.division = $1
+    GROUP BY s.eiin, s.name, s.capacity
+    ORDER BY choice1_hits DESC
+    LIMIT 10;
+  `, [division]);
+  res.json(rows);
+}));
+
+// Lottery results search
+router.get('/lottery-results', asyncHandler(async (req, res) => {
+  const { search, status } = req.query;
+  const { rows } = await query(`
+    SELECT ar.*, st.name AS student_name, sc.name AS school_name, sc.eiin
+    FROM vw_admission_result ar
+    JOIN student st ON st.bc_no = ar.bc_no
+    JOIN seat sc ON sc.seat_id = ar.seat_id
+    WHERE ($1 IS NULL OR ar.application_id ILIKE $1 OR st.name ILIKE $1 OR st.bc_no ILIKE $1)
+      AND ($2 IS NULL OR ar.result_status = $2);
+  `, [search ? `%${search}%` : null, status && status !== 'ALL' ? status : null]);
+  res.json(rows);
+}));
+
+// Forfeit expired allotments
+router.post('/lottery/forfeit-expired', asyncHandler(async (req, res) => {
+  const deadline = req.body.deadline; // ISO timestamp
+  await query('CALL proc_process_expired_allotments($1::timestamptz)', [deadline]);
+  res.json({ forfeit: true });
+}));
+
+// Disqualify applicant
+router.post('/lottery/disqualify',
+  body('applicationId').isString(),
+  body('reason').isString(),
+  validate,
+  asyncHandler(async (req, res) => {
+    const { applicationId, reason } = req.body;
+    await query('CALL proc_disqualify_applicant($1, $2)', [applicationId, reason]);
+    res.json({ disqualified: true });
+  })
+);
+
 module.exports = router;
+
