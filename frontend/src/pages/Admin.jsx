@@ -11,10 +11,15 @@ function matchesQuery(row, fields, q) {
   return fields.some((f) => String(row[f] ?? '').toLowerCase().includes(needle));
 }
 
+// Green / red state chip for the two switches that govern the public site.
+function StatusLight({ on, onLabel, offLabel }) {
+  return <span className={`status-light ${on ? 'on' : 'off'}`}>{on ? onLabel : offLabel}</span>;
+}
+
 export default function Admin() {
   const nav = useNavigate();
   const [schools, setSchools] = useState([]);
-  const [settings, setSettings] = useState([]);
+  const [dash, setDash] = useState(null);
   const [delReqs, setDelReqs] = useState([]);
   const [results, setResults] = useState([]);
   const [audit, setAudit] = useState([]);
@@ -32,13 +37,13 @@ export default function Admin() {
 
   async function loadAll() {
     setErr('');
-    // Each panel (schools, lottery/settings, results, ...) is loaded independently:
+    // Each panel (dashboard, schools, results, ...) is loaded independently:
     // one failing endpoint (e.g. quota-types) must not blank out the others, since
     // create/delete school, view schools, run lottery and see results are the
     // core master-admin features and must keep working even if a side panel errors.
     const specs = [
+      ['/admin/dashboard', setDash],
       ['/admin/schools', setSchools],
-      ['/admin/settings', setSettings],
       ['/admin/deletion-requests', setDelReqs],
       ['/admin/results', setResults],
       ['/admin/audit', setAudit],
@@ -96,10 +101,38 @@ export default function Admin() {
     } catch (e) { setErr(apiError(e)); }
   }
 
+  // Two separate decisions, two separate buttons. Running the draw allocates
+  // seats and closes the window; nobody outside this page can see the outcome
+  // until "Publish results" is pressed.
   async function runLottery() {
     setErr(''); setMsg('');
-    if (!window.confirm('Run the admission lottery now? This allocates seats and publishes results.')) return;
-    try { await api.post('/admin/lottery', { round: 1 }); setMsg('Lottery completed and results published.'); loadAll(); }
+    const round = (dash?.current_round || 0) + 1;
+    const warning = dash?.result_ready
+      ? `\n\nThe currently published result will be UNPUBLISHED, because re-running changes it.`
+      : '';
+    if (!window.confirm(
+      `Run the admission lottery (round ${round}) now?\n\n`
+      + 'This closes the application window and allocates seats. '
+      + 'Results are NOT published — applicants will not see them until you press "Publish results".'
+      + warning)) return;
+    try {
+      await api.post('/admin/lottery', { round });
+      setMsg(`Lottery round ${round} completed. Results are saved but NOT published — review them below, then press "Publish results".`);
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
+  }
+
+  async function publishResults() {
+    setErr(''); setMsg('');
+    if (!window.confirm('Publish the results?\n\nEvery applicant will immediately be able to look up their result from the landing page.')) return;
+    try { await api.post('/admin/results/publish'); setMsg('Results published — "Check Result" is now open to applicants.'); loadAll(); }
+    catch (e) { setErr(apiError(e)); }
+  }
+
+  async function unpublishResults() {
+    setErr(''); setMsg('');
+    if (!window.confirm('Unpublish the results?\n\n"Check Result" becomes inaccessible again. Applicants who already saw their result will remember it.')) return;
+    try { await api.post('/admin/results/unpublish'); setMsg('Results unpublished — the public result lookup is closed.'); loadAll(); }
     catch (e) { setErr(apiError(e)); }
   }
 
@@ -109,11 +142,18 @@ export default function Admin() {
     catch (e) { setErr(apiError(e)); }
   }
 
-  async function toggleRound() {
-    const cur = settings.find((s) => s.key === 'ROUND_OPEN')?.value;
-    const value = cur === 'TRUE' ? 'FALSE' : 'TRUE';
-    try { await api.post('/admin/settings', { key: 'ROUND_OPEN', value }); loadAll(); }
-    catch (e) { setErr(apiError(e)); }
+  // The button always states the action it performs ("Close applications"),
+  // never the state it is in — the chip beside it carries the state.
+  async function setRoundOpen(open) {
+    setErr(''); setMsg('');
+    if (!window.confirm(open
+      ? 'Open applications? Applicants will be able to submit new forms again.'
+      : 'Close applications? No new form can be submitted until you re-open.')) return;
+    try {
+      await api.post('/admin/round', { open });
+      setMsg(open ? 'Applications are now OPEN.' : 'Applications are now CLOSED.');
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   async function deleteSchool(eiin) {
@@ -147,12 +187,72 @@ export default function Admin() {
         </div>
         {err && <Alert kind="error">{err}</Alert>}
         {msg && <Alert kind="ok">{msg}</Alert>}
-        <div className="btn-row">
-          <button onClick={runLottery}>▶ Run lottery & publish</button>
-          <button className="btn-secondary" onClick={toggleRound}>
-            Toggle round (now: {settings.find((s) => s.key === 'ROUND_OPEN')?.value || '—'})
-          </button>
+
+        {/* Rendered only once the real state is known — a red "Closed" light
+            flashing during the first load would be a lie about the live site. */}
+        {!dash ? <p className="muted">Loading status…</p> : (
+        <div className="ops-grid">
+          {/* Switch 1 — the application window. */}
+          <div className="ops-panel">
+            <div className="ops-head">
+              <span className="ops-title">Applications</span>
+              <StatusLight on={!!dash?.round_open} onLabel="Open" offLabel="Closed" />
+            </div>
+            <p className="help">
+              {dash?.round_open
+                ? 'Applicants can submit new forms right now.'
+                : 'No new form can be submitted. Running the lottery closes this automatically.'}
+            </p>
+            {dash?.round_open
+              ? <button className="btn-danger" onClick={() => setRoundOpen(false)}>Close applications</button>
+              : <button className="btn-ready" onClick={() => setRoundOpen(true)}>Open applications</button>}
+          </div>
+
+          {/* Switch 2 — publication, deliberately independent of the draw. */}
+          <div className="ops-panel">
+            <div className="ops-head">
+              <span className="ops-title">Results</span>
+              <StatusLight on={!!dash?.result_ready} onLabel="Published" offLabel="Not published" />
+            </div>
+            <p className="help">
+              {dash?.result_ready
+                ? 'Applicants can look up their result from the landing page.'
+                : dash?.results_pending_publish
+                  ? `Round ${dash.current_round} is allocated but hidden from applicants — review the results below, then publish.`
+                  : 'Nothing to publish yet. Run the lottery first.'}
+            </p>
+            <div className="btn-row" style={{ marginTop: 0 }}>
+              <button className="btn-secondary" onClick={runLottery}>
+                ▶ Run lottery{dash?.current_round ? ` (round ${dash.current_round + 1})` : ''}
+              </button>
+              {dash?.result_ready
+                ? <button className="btn-danger" onClick={unpublishResults}>Unpublish results</button>
+                : (
+                  <button
+                    className="btn-ready"
+                    onClick={publishResults}
+                    disabled={!dash?.results_pending_publish}
+                    title={dash?.results_pending_publish ? '' : 'Run the lottery first'}
+                  >
+                    Publish results
+                  </button>
+                )}
+            </div>
+          </div>
         </div>
+        )}
+
+        {dash && (
+          <div className="ops-stats">
+            <div><b>{dash.counts.applications}</b><span>Applications</span></div>
+            <div><b>{dash.counts.admitted}</b><span>Admitted</span></div>
+            <div><b>{dash.counts.waiting}</b><span>Waiting</span></div>
+            <div>
+              <b>{dash.current_round || '—'}</b>
+              <span>{dash.last_run_at ? `Last run ${new Date(dash.last_run_at).toLocaleString()}` : 'Rounds run'}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -281,6 +381,10 @@ export default function Admin() {
 
       <div className="card">
         <h3>Results ({results.length})</h3>
+        {results.length > 0 && (dash?.result_ready
+          ? <p className="help">Published — applicants can look these up from the landing page.</p>
+          : <Alert kind="warn">Draft — visible to you only. Applicants cannot look these up until you press <b>Publish results</b>.</Alert>
+        )}
         <Field label="Search results">
           <input
             value={resultSearch}

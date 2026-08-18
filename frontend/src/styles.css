@@ -191,6 +191,8 @@ button.btn-ready:hover { background: #145f3d; }
 .alert-ok::before { content: '✓'; }
 .alert-info { background: var(--brand-light); color: var(--brand-dark); border: 1px solid #c5e2d8; }
 .alert-info::before { content: 'i'; font-style: italic; font-family: var(--font-display); }
+.alert-warn { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn-line); }
+.alert-warn::before { content: '!'; }
 
 /* Stepper --------------------------------------------------------------- */
 .stepper { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -224,6 +226,43 @@ tbody tr:last-child td { border-bottom: none; }
 .badge.NOT_ADMITTED, .badge.CANCELLED { background: var(--danger-bg); color: var(--danger); }
 .badge.SUBMITTED { background: var(--brand-light); color: var(--brand-dark); }
 
+/* Admin operations dashboard ------------------------------------------ */
+/* The two switches that govern the public site. Each panel shows the state
+   as a red/green light and, beside it, the one button that changes it — the
+   button is labelled with the ACTION, never with the current state. */
+.ops-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px; margin-top: 14px;
+}
+.ops-panel {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; background: var(--brand-tint);
+}
+.ops-head { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.ops-title {
+  font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--ink);
+}
+.ops-panel .help { margin: 4px 0 12px; min-height: 34px; }
+
+.status-light {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 11px 3px 9px; border-radius: 12px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+}
+.status-light::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none;
+}
+.status-light.on  { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-line); }
+.status-light.off { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-line); }
+
+.ops-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.ops-stats div { display: flex; flex-direction: column; gap: 1px; }
+.ops-stats b { font-family: var(--font-display); font-size: 22px; line-height: 1.1; color: var(--brand-dark); }
+.ops-stats span { font-size: 11.5px; color: var(--muted); }
+
 /* Home hero + tiles --------------------------------------------------- */
 .hero {
   position: relative; overflow: hidden;
@@ -250,6 +289,22 @@ tbody tr:last-child td { border-bottom: none; }
 .tile h2 { font-size: 16.5px; margin: 0 0 8px; padding-bottom: 0; }
 .tile h2::after { display: none; }
 .tile p { margin: 0; font-size: 13.5px; }
+
+/* A tile whose destination is not open yet (e.g. Check Result before the
+   admin publishes): shown, so applicants know it exists and is coming, but
+   not a link. */
+.tile-locked {
+  border-left-color: var(--line); background: var(--line-soft);
+  cursor: not-allowed; opacity: .85;
+}
+.tile-locked:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--line); }
+.tile-locked h2 { color: var(--muted); }
+.tile-lock-note {
+  display: inline-block; margin-top: 10px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--warn); background: var(--warn-bg);
+  border: 1px solid var(--warn-line); border-radius: 12px; padding: 2px 10px;
+}
 
 .kv { display: grid; grid-template-columns: 200px 1fr; gap: 7px 12px; font-size: 14px; }
 .kv div:nth-child(odd) { color: var(--muted); font-weight: 600; }

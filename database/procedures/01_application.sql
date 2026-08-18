@@ -45,6 +45,15 @@ DECLARE
     v_win_min    DATE;
     v_win_max    DATE;
 BEGIN
+    -- 0. The admission window must be open. The admin closes it from the portal
+    --    dashboard, and running the lottery closes it automatically — after a
+    --    draw has allocated seats, a late application would be competing for
+    --    capacity that has already been given away.
+    IF COALESCE((SELECT value FROM app_setting WHERE key = 'ROUND_OPEN'), 'TRUE') <> 'TRUE' THEN
+        RAISE EXCEPTION 'Applications are closed. The admission window is not open right now.'
+            USING ERRCODE = '23514';
+    END IF;
+
     -- 1. Identity comes from the birth-certificate registry (never typed).
     SELECT dob, gender INTO v_dob, v_gender FROM birth_certificate WHERE bc_no = p_bc_no;
     IF NOT FOUND THEN

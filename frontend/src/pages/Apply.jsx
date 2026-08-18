@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import api, { apiError } from '../api/client';
+import { useRoundStatus } from '../api/roundStatus';
 import { Alert, Stepper, Field, Combobox } from '../components/ui.jsx';
 import { empty, blankArea, blankStatus, bcChanged, resetForBc } from './applyState.js';
 
@@ -102,6 +103,10 @@ export default function Apply() {
   const [geo, setGeo] = useState(null);
   const [schoolNames, setSchoolNames] = useState([]);
   const [lockNote, setLockNote] = useState('');
+
+  // The window is enforced in sp_submit_application; this only stops someone
+  // filling six steps of a form that cannot be submitted.
+  const { round_open: roundOpen, result_ready: resultReady, ready: statusReady } = useRoundStatus();
 
   const fRef = useRef(f); fRef.current = f;
   const ffTimers = useRef({});
@@ -362,6 +367,24 @@ export default function Apply() {
         <div className="btn-row">
           <a className="btn" href={`/retrieve`}>Go to Download</a>
           <button className="btn-secondary" onClick={() => { setF(empty); setStep(0); setDone(null); setSubmitErr([]); }}>New application</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (statusReady && !roundOpen) {
+    return (
+      <div className="card">
+        <h2>New Application</h2>
+        <Alert kind="warn">The admission window is closed — new applications are not being accepted.</Alert>
+        <p className="muted">
+          {resultReady
+            ? 'The lottery has been held and the results are published. Check your result from the “Result” page.'
+            : 'Applications will reopen when the admission authority opens the next round. If you have already applied, you can still download your copy from the “Download / Delete” page.'}
+        </p>
+        <div className="btn-row">
+          <a className="btn btn-secondary" href="/">Back to home</a>
+          {resultReady && <a className="btn btn-secondary" href="/result">Check result</a>}
         </div>
       </div>
     );

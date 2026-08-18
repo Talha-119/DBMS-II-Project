@@ -22,6 +22,26 @@ async function fetchCopy(applicationId) {
   return rows[0] || null;
 }
 
+// Running the lottery sets application.status to ADMITTED / WAITING immediately,
+// but a run is not a published result: the admin reviews it first and may re-run.
+// So on the applicant side the outcome is hidden until RESULT_READY — otherwise
+// the retrieve screen and the PDF would quietly announce a result the admin has
+// deliberately not published yet, and the "Check Result" gate would be pointless.
+async function resultsPublished() {
+  const { rows } = await query("SELECT value FROM app_setting WHERE key = 'RESULT_READY'");
+  return rows.length > 0 && rows[0].value === 'TRUE';
+}
+
+const OUTCOME_STATUSES = new Set(['ADMITTED', 'WAITING', 'NOT_ADMITTED']);
+
+// Falls back to the applicant's own last-known state ("your form is in"), which
+// is exactly what it was before the draw. CANCELLED is an applicant-visible
+// administrative state, not a lottery outcome, so it is left alone.
+function maskOutcome(row) {
+  if (!row || !OUTCOME_STATUSES.has(row.status)) return row;
+  return { ...row, status: 'SUBMITTED' };
+}
+
 async function ensureCanAccess(req, copy) {
   if (!copy) return { ok: false, status: 404, error: 'Application not found' };
   if (req.user && req.user.role === 'MASTER_ADMIN') return { ok: true };
@@ -133,16 +153,26 @@ router.post('/retrieve',
        LEFT JOIN payment pay ON pay.application_id = a.application_id
        WHERE a.bc_no = $1 ORDER BY a.submitted_at DESC`, [bc_no]);
 
+    const published = await resultsPublished();
+    const applications = published ? apps.rows : apps.rows.map(maskOutcome);
+
     const token = jwt.sign({ scope: 'applicant', bc_no }, env.JWT_SECRET, { expiresIn: '30m' });
-    res.json({ token, applications: apps.rows });
+    res.json({ token, applications, result_ready: published });
   }));
+
+// The admin sees the real state (they need it to review an unpublished run);
+// an applicant sees the outcome only once it has been published.
+async function copyForViewer(req, copy) {
+  if (req.user && req.user.role === 'MASTER_ADMIN') return copy;
+  return (await resultsPublished()) ? copy : maskOutcome(copy);
+}
 
 // --- View a single applicant copy (JSON) ---
 router.get('/:id', applicantAccess, asyncHandler(async (req, res) => {
   const copy = await fetchCopy(req.params.id);
   const access = await ensureCanAccess(req, copy);
   if (!access.ok) return res.status(access.status).json({ error: access.error });
-  res.json(copy);
+  res.json(await copyForViewer(req, copy));
 }));
 
 // --- Download the applicant copy as PDF ---
@@ -150,7 +180,7 @@ router.get('/:id/pdf', applicantAccess, asyncHandler(async (req, res) => {
   const copy = await fetchCopy(req.params.id);
   const access = await ensureCanAccess(req, copy);
   if (!access.ok) return res.status(access.status).json({ error: access.error });
-  streamApplicantCopy(copy, res);
+  streamApplicantCopy(await copyForViewer(req, copy), res);
 }));
 
 // --- Request deletion (verifies a DELETE OTP, queues for master-admin approval) ---

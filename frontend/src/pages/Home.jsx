@@ -1,6 +1,12 @@
 import { Link } from 'react-router-dom';
+import { useRoundStatus } from '../api/roundStatus';
 
 export default function Home() {
+  // Results exist only once the admin has run the lottery AND pressed publish.
+  // Until then the tile is not a link at all — the applicant side must not
+  // learn that an allocation already happened.
+  const { result_ready: resultReady, ready } = useRoundStatus();
+
   return (
     <>
       <div className="hero">
@@ -25,10 +31,18 @@ export default function Home() {
           <h2>Download / Delete</h2>
           <p className="muted">Retrieve your application with Birth Cert + DOB + mobile OTP. Download the PDF or request deletion.</p>
         </Link>
-        <Link to="/result" className="card tile">
-          <h2>Check Result</h2>
-          <p className="muted">See your lottery result — merit list and waiting lists — once published.</p>
-        </Link>
+        {resultReady ? (
+          <Link to="/result" className="card tile">
+            <h2>Check Result</h2>
+            <p className="muted">See your lottery result — merit list and waiting lists.</p>
+          </Link>
+        ) : (
+          <div className="card tile tile-locked" aria-disabled="true">
+            <h2>Check Result</h2>
+            <p className="muted">Merit list and waiting lists open here once the authority publishes them.</p>
+            {ready && <span className="tile-lock-note">Not published yet</span>}
+          </div>
+        )}
         <Link to="/recover" className="card tile">
           <h2>Recover Applicant ID</h2>
           <p className="muted">Forgot your Applicant ID? Recover it with your Birth Cert + mobile OTP.</p>

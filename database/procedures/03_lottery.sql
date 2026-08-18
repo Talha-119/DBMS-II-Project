@@ -96,12 +96,59 @@ BEGIN
     WHERE status = 'SUBMITTED'
       AND application_id IN (SELECT application_id FROM admission_result WHERE status = 'WAITING' AND round = p_round);
 
-    -- Publish: results are ready and the application window is closed.
-    INSERT INTO app_setting (key, value) VALUES ('RESULT_READY', 'TRUE')
-    ON CONFLICT (key) DO UPDATE SET value = 'TRUE', updated_at = now();
+    -- Running the lottery CLOSES the application window but does NOT publish.
+    -- The allocation now exists in admission_result, yet stays invisible to the
+    -- applicant side until the admin explicitly calls sp_publish_results() --
+    -- so a run can be inspected (and re-run) before anyone can look it up.
+    -- Re-running therefore also un-publishes: the previously published result
+    -- no longer matches what is in the table, so it must not stay readable.
+    INSERT INTO app_setting (key, value) VALUES ('RESULT_READY', 'FALSE')
+    ON CONFLICT (key) DO UPDATE SET value = 'FALSE', updated_at = now();
     INSERT INTO app_setting (key, value) VALUES ('ROUND_OPEN', 'FALSE')
     ON CONFLICT (key) DO UPDATE SET value = 'FALSE', updated_at = now();
     INSERT INTO app_setting (key, value) VALUES ('CURRENT_ROUND', p_round::TEXT)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+END;
+$$;
+
+
+-- ============================================================================
+-- Publication control. Separate from the draw on purpose: allocating seats and
+-- telling the country about it are two different decisions, and only the second
+-- one is irreversible in practice (people act on a published result).
+-- ============================================================================
+
+CREATE OR REPLACE PROCEDURE sp_publish_results()
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Nothing to publish before a lottery has been run: publishing an empty
+    -- result set would open the public lookup only for it to answer
+    -- "no result found" to every applicant.
+    IF NOT EXISTS (SELECT 1 FROM admission_result) THEN
+        RAISE EXCEPTION 'No lottery results to publish — run the lottery first';
+    END IF;
+
+    INSERT INTO app_setting (key, value) VALUES ('RESULT_READY', 'TRUE')
+    ON CONFLICT (key) DO UPDATE SET value = 'TRUE', updated_at = now();
+END;
+$$;
+
+
+CREATE OR REPLACE PROCEDURE sp_unpublish_results()
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO app_setting (key, value) VALUES ('RESULT_READY', 'FALSE')
+    ON CONFLICT (key) DO UPDATE SET value = 'FALSE', updated_at = now();
+END;
+$$;
+
+
+-- Open / close the application window on its own, without touching results.
+CREATE OR REPLACE PROCEDURE sp_set_round_open(p_open BOOLEAN)
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO app_setting (key, value)
+    VALUES ('ROUND_OPEN', CASE WHEN p_open THEN 'TRUE' ELSE 'FALSE' END)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 END;
 $$;

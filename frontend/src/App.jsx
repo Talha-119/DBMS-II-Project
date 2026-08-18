@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes, Navigate } from 'react-router-dom';
 import { getRole, getToken } from './api/client';
+import { useRoundStatus } from './api/roundStatus';
 import Home from './pages/Home.jsx';
 import Apply from './pages/Apply.jsx';
 import Seats from './pages/Seats.jsx';
@@ -16,6 +17,11 @@ function RequireRole({ role, children }) {
 }
 
 export default function App() {
+  // The Result link only appears once the admin publishes. The /result route
+  // itself stays mounted (and explains the wait) so an old bookmark or a typed
+  // URL gets an answer rather than a redirect.
+  const { result_ready: resultReady } = useRoundStatus();
+
   return (
     <>
       <header className="site-header">
@@ -28,7 +34,7 @@ export default function App() {
             <NavLink to="/apply">Apply</NavLink>
             <NavLink to="/seats">Vacant Seats</NavLink>
             <NavLink to="/retrieve">Download / Delete</NavLink>
-            <NavLink to="/result">Result</NavLink>
+            {resultReady && <NavLink to="/result">Result</NavLink>}
             <NavLink to="/recover">Recover ID</NavLink>
             <NavLink to="/login" className="nav-staff">Admin / School Authority Login</NavLink>
           </nav>
