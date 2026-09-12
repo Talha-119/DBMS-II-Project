@@ -1,5 +1,6 @@
 -- 012_add_status_enums.sql
--- Migration to add admission lifecycle status enum and columns to application and admission_result tables.
+-- Migration to add admission lifecycle status enum and columns.
+-- Fully idempotent: safe to run multiple times.
 
 DO $$
 BEGIN
@@ -15,14 +16,14 @@ BEGIN
     END IF;
 END $$;
 
--- Add lifecycle_status column to application (default ALLOTTED)
+-- lifecycle_status on application tracks post-lottery state (default WAITLISTED until lottery runs)
 ALTER TABLE IF EXISTS application
-    ADD COLUMN IF NOT EXISTS lifecycle_status admission_lifecycle_status_t NOT NULL DEFAULT 'ALLOTTED';
+    ADD COLUMN IF NOT EXISTS lifecycle_status admission_lifecycle_status_t NOT NULL DEFAULT 'WAITLISTED';
 
--- Add lifecycle_status column to admission_result (default ALLOTTED)
+-- lifecycle_status on admission_result tracks what happened after the result was issued
 ALTER TABLE IF EXISTS admission_result
     ADD COLUMN IF NOT EXISTS lifecycle_status admission_lifecycle_status_t NOT NULL DEFAULT 'ALLOTTED';
 
--- Indexes for quick lookup
-CREATE INDEX IF NOT EXISTS idx_application_lifecycle_status ON application(lifecycle_status);
-CREATE INDEX IF NOT EXISTS idx_admission_result_lifecycle_status ON admission_result(lifecycle_status);
+-- Indexes for fast lookups
+CREATE INDEX IF NOT EXISTS idx_application_lifecycle_status        ON application(lifecycle_status);
+CREATE INDEX IF NOT EXISTS idx_admission_result_lifecycle_status   ON admission_result(lifecycle_status);
