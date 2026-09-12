@@ -36,76 +36,15 @@ router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
   res.json({ deleted: true });
 }));
 
-// Operations dashboard ------------------------------------------------------
-// One call for the admin landing panel: the two switches that actually govern
-// the public site (is the application window open, are results published) plus
-// the counts that tell the admin whether either switch is safe to flip.
-router.get('/dashboard', asyncHandler(async (_req, res) => {
-  const settings = await query(
-    `SELECT key, value, updated_at FROM app_setting
-     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
-  const s = Object.fromEntries(settings.rows.map((r) => [r.key, r.value]));
-  const publishedAt = settings.rows.find((r) => r.key === 'RESULT_READY')?.updated_at || null;
-
-  const { rows } = await query(
-    `SELECT
-       (SELECT count(*) FROM application)                                  AS applications,
-       (SELECT count(*) FROM admission_result)                             AS results,
-       (SELECT count(*) FROM admission_result WHERE status = 'ADMITTED')   AS admitted,
-       (SELECT count(*) FROM admission_result WHERE status = 'WAITING')    AS waiting,
-       (SELECT max(decided_at) FROM admission_result)                      AS last_run_at`);
-  const c = rows[0];
-
-  res.json({
-    round_open: s.ROUND_OPEN === 'TRUE',
-    result_ready: s.RESULT_READY === 'TRUE',
-    current_round: parseInt(s.CURRENT_ROUND || '0', 10),
-    // A run exists but has not been published — the state the separate
-    // "Run lottery" / "Publish results" buttons are there to make visible.
-    results_pending_publish: Number(c.results) > 0 && s.RESULT_READY !== 'TRUE',
-    published_at: s.RESULT_READY === 'TRUE' ? publishedAt : null,
-    last_run_at: c.last_run_at,
-    counts: {
-      applications: Number(c.applications),
-      results: Number(c.results),
-      admitted: Number(c.admitted),
-      waiting: Number(c.waiting),
-    },
-  });
-}));
-
-// Application window --------------------------------------------------------
-router.post('/round',
-  body('open').isBoolean(),
-  validate,
-  asyncHandler(async (req, res) => {
-    await query('CALL sp_set_round_open($1::boolean)', [req.body.open]);
-    res.json({ round_open: req.body.open });
-  }));
-
 // Lottery -------------------------------------------------------------------
-// Runs the draw ONLY. It closes the application window and writes the results,
-// but leaves them unpublished — the applicant side and the public result
-// lookup stay unaware until POST /admin/results/publish.
 router.post('/lottery',
   body('round').optional().isInt({ min: 1 }),
   validate,
   asyncHandler(async (req, res) => {
     const round = req.body.round || 1;
     await query('CALL sp_run_lottery($1::int)', [round]);
-    res.json({ ran: true, round, published: false });
+    res.json({ ran: true, round });
   }));
-
-// Publication ---------------------------------------------------------------
-router.post('/results/publish', asyncHandler(async (_req, res) => {
-  await query('CALL sp_publish_results()');
-  res.json({ result_ready: true });
-}));
-
-router.post('/results/unpublish', asyncHandler(async (_req, res) => {
-  await query('CALL sp_unpublish_results()');
-  res.json({ result_ready: false });
-}));
 
 // Deletion approvals --------------------------------------------------------
 router.get('/deletion-requests', asyncHandler(async (_req, res) => {
@@ -226,24 +165,18 @@ router.post('/settings',
 router.get('/analytics/division', asyncHandler(async (req, res) => {
   const division = req.query.division;
   const { rows } = await query(`
-    SELECT 
-      COUNT(*) AS total_choices,
-      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / COUNT(*) * 100 AS choice1_pct,
-      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / NULLIF(s.capacity,0) AS demand_ratio,
-      json_agg(json_build_object(
-        'eiin', s.eiin,
-        'school_name', s.name,
-        'capacity', s.capacity,
-        'choice1_hits', COUNT(CASE WHEN ac.preference = 1 THEN 1 END),
-        'total_hits', COUNT(*)
-      )) AS top_schools
+    SELECT
+      s.eiin,
+      s.name AS school_name,
+      s.seats_remaining AS capacity,
+      s.total_choices,
+      s.admitted_count
     FROM vw_school_dashboard s
-    JOIN application_choice ac ON ac.seat_id = s.seat_id
-    WHERE s.division = $1
-    GROUP BY s.eiin, s.name, s.capacity
-    ORDER BY choice1_hits DESC
+    JOIN postcode pc ON pc.postcode = s.postcode
+    WHERE ($1::text IS NULL OR pc.division = $1)
+    ORDER BY s.total_choices DESC
     LIMIT 10;
-  `, [division]);
+  `, [division || null]);
   res.json(rows);
 }));
 
@@ -251,12 +184,13 @@ router.get('/analytics/division', asyncHandler(async (req, res) => {
 router.get('/lottery-results', asyncHandler(async (req, res) => {
   const { search, status } = req.query;
   const { rows } = await query(`
-    SELECT ar.*, st.name AS student_name, sc.name AS school_name, sc.eiin
+    SELECT ar.application_id, ar.bc_no, ar.student_name, ar.status,
+           ar.allocated_quota, ar.eiin, ar.school_name, ar.class_level, ar.round, ar.decided_at,
+           a.lifecycle_status
     FROM vw_admission_result ar
-    JOIN student st ON st.bc_no = ar.bc_no
-    JOIN seat sc ON sc.seat_id = ar.seat_id
-    WHERE ($1 IS NULL OR ar.application_id ILIKE $1 OR st.name ILIKE $1 OR st.bc_no ILIKE $1)
-      AND ($2 IS NULL OR ar.result_status = $2);
+    JOIN application a ON a.application_id = ar.application_id
+    WHERE ($1::text IS NULL OR ar.application_id ILIKE $1 OR ar.student_name ILIKE $1 OR ar.bc_no ILIKE $1)
+      AND ($2::text IS NULL OR ar.status = $2);
   `, [search ? `%${search}%` : null, status && status !== 'ALL' ? status : null]);
   res.json(rows);
 }));
