@@ -136,6 +136,38 @@ SELECT 'payment', 'every application has a payment row',
        count(*) FROM application a
  WHERE NOT EXISTS (SELECT 1 FROM payment p WHERE p.application_id = a.application_id)
 
+-- ---- Application rate limits (DELETED applications never count) -----------
+UNION ALL
+SELECT 'limits', 'at most 3 live applications per student',
+       count(*) FROM (
+         SELECT bc_no FROM application WHERE status <> 'DELETED'
+          GROUP BY bc_no HAVING count(*) > 3
+       ) x
+
+UNION ALL
+SELECT 'limits', 'at most one live application per student per area',
+       count(*) FROM (
+         SELECT bc_no, applying_postcode FROM application WHERE status <> 'DELETED'
+          GROUP BY bc_no, applying_postcode HAVING count(*) > 1
+       ) x
+
+UNION ALL
+SELECT 'limits', 'a student chose each school at most once',
+       count(*) FROM (
+         SELECT a.bc_no, se.eiin
+           FROM application_choice ac
+           JOIN application a ON a.application_id = ac.application_id
+           JOIN seat se       ON se.seat_id = ac.seat_id
+          WHERE a.status <> 'DELETED'
+          GROUP BY a.bc_no, se.eiin HAVING count(*) > 1
+       ) x
+
+UNION ALL
+SELECT 'limits', 'no DELETED application holds a lottery result',
+       count(*) FROM admission_result r
+  JOIN application a ON a.application_id = r.application_id
+ WHERE a.status = 'DELETED'
+
 )
 SELECT category, check_name, violations,
        CASE WHEN violations = 0 THEN 'PASS' ELSE 'FAIL' END AS status

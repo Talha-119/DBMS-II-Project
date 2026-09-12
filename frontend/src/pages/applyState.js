@@ -19,6 +19,10 @@ export const empty = {
   permanent: { ...blankArea }, permanent_detail: '',
   prev_school_name: '',
   applying: { ...blankArea }, seats: [], choices: [],
+  // What the application limits leave this applicant (from
+  // /lookup/applicant-limits). Derived from the birth certificate like
+  // everything else here, so it is cleared by resetForBc below.
+  limits: null,
 };
 
 // The birth certificate is the identity the entire form hangs off: name, DOB,
