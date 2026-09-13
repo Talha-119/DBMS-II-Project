@@ -185,10 +185,8 @@ router.post('/quota-types/rebalance', asyncHandler(async (_req, res) => {
 }));
 
 // Class age eligibility — READ ONLY for the master admin.
-// The national windows are policy: the admin can see them but not change them.
-// Each school sets its own (narrower) window through the authority portal
-// (POST /authority/class-eligibility), so admission criteria belong to the
-// school that admits the student, not to the central operator.
+// The national windows are set by the government: the admin can see them but
+// not change them, and school authorities cannot change them either.
 router.get('/class-eligibility', asyncHandler(async (_req, res) => {
   const { rows } = await query('SELECT * FROM fn_class_eligibility_info()');
   res.json(rows);
