@@ -54,27 +54,6 @@ router.get('/class-eligibility', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-// Narrow this school's window for a class. The DB trigger rejects any window
-// wider than the national one.
-router.post('/class-eligibility',
-  body('class_level').isInt({ min: 1, max: 12 }),
-  body('min_dob').isISO8601().withMessage('min_dob must be a date (YYYY-MM-DD)'),
-  body('max_dob').isISO8601().withMessage('max_dob must be a date (YYYY-MM-DD)'),
-  validate,
-  asyncHandler(async (req, res) => {
-    const { class_level, min_dob, max_dob } = req.body;
-    await query('CALL sp_upsert_school_class_eligibility($1, $2::int, $3::date, $4::date)',
-      [req.user.eiin, class_level, min_dob, max_dob]);
-    res.status(201).json({ saved: true, class_level });
-  }));
-
-// Drop the override so this class falls back to the national window.
-router.delete('/class-eligibility/:class', asyncHandler(async (req, res) => {
-  await query('CALL sp_reset_school_class_eligibility($1, $2::int)',
-    [req.user.eiin, req.params.class]);
-  res.json({ reset: true });
-}));
-
 // Applicants who chose a seat in this school.
 router.get('/applicants', asyncHandler(async (req, res) => {
   const { rows } = await query(

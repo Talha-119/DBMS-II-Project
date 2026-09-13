@@ -168,10 +168,9 @@ export default function Admin() {
       <div className="card">
         <h3>Class age eligibility — national baseline (read-only)</h3>
         <p className="help">
-          The nationally accepted date-of-birth window for each class, and the outer bound every
-          school must stay inside. Admission criteria are set by each school, so this is not editable
-          here — a school authority narrows its own window from its portal. Age limits are shown at
-          1 January of the admission year.
+          The nationally accepted date-of-birth window for each class. These limits are set by the
+          government, so they cannot be edited here or from a school authority's portal. Age limits
+          are shown at 1 January of the admission year.
         </p>
         <table>
           <thead><tr><th>Class</th><th>Accepted from</th><th>Accepted to</th><th>Age limit</th></tr></thead>
