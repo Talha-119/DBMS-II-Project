@@ -93,7 +93,7 @@ router.post('/lottery',
   asyncHandler(async (req, res) => {
     const round = req.body.round || 1;
     await query('CALL sp_run_lottery($1::int)', [round]);
-    res.json({ ran: true, round, published: false });
+    res.json({ ran: true, round, published: true });
   }));
 
 // Publication ---------------------------------------------------------------
