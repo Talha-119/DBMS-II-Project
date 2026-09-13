@@ -34,6 +34,7 @@ export default function Admin() {
   const [schoolSearch, setSchoolSearch] = useState('');
   const [resultSearch, setResultSearch] = useState('');
   const [auditSearch, setAuditSearch] = useState('');
+  const [announce, setAnnounce] = useState({ audience: 'APPLICANT', eiin: '', title: '', body: '' });
 
   async function loadAll() {
     setErr('');
@@ -140,6 +141,29 @@ export default function Admin() {
     setErr(''); setMsg('');
     try { await api.post(`/admin/deletion-requests/${id}`, { approve }); setMsg(`Request ${approve ? 'approved' : 'rejected'}.`); loadAll(); }
     catch (e) { setErr(apiError(e)); }
+  }
+
+  // Manual counterpart to the automatic notifications (submit, payment, results,
+  // ...): pushes a one-off announcement straight into an inbox. See
+  // sp_broadcast_notification in database/procedures/04_notifications.sql.
+  async function sendAnnouncement(e) {
+    e.preventDefault(); setErr(''); setMsg('');
+    try {
+      await api.post('/admin/notifications/broadcast', {
+        audience: announce.audience,
+        eiin: announce.audience === 'SCHOOL_AUTHORITY' && announce.eiin ? announce.eiin : undefined,
+        title: announce.title,
+        body: announce.body || undefined,
+      });
+      setMsg(
+        announce.audience === 'APPLICANT'
+          ? 'Announcement sent to every applicant.'
+          : announce.eiin
+            ? `Announcement sent to school ${announce.eiin}.`
+            : 'Announcement sent to every school authority.'
+      );
+      setAnnounce({ audience: announce.audience, eiin: '', title: '', body: '' });
+    } catch (e) { setErr(apiError(e)); }
   }
 
   // The button always states the action it performs ("Close applications"),
@@ -356,6 +380,51 @@ export default function Admin() {
               </tbody>
             </table>
           )}
+      </div>
+
+      <div className="card">
+        <h3>Send announcement</h3>
+        <p className="help">
+          Pushes a notification straight into the inbox: applicants see it on the Download / Delete
+          Application page, school authorities see it under the bell icon in the header.
+        </p>
+        <form onSubmit={sendAnnouncement}>
+          <div className="row">
+            <Field label="Audience">
+              <select
+                value={announce.audience}
+                onChange={(e) => setAnnounce({ ...announce, audience: e.target.value, eiin: '' })}
+              >
+                <option value="APPLICANT">All applicants</option>
+                <option value="SCHOOL_AUTHORITY">School authority</option>
+              </select>
+            </Field>
+            {announce.audience === 'SCHOOL_AUTHORITY' && (
+              <Field label="School EIIN (blank = every school)">
+                <input
+                  value={announce.eiin}
+                  onChange={(e) => setAnnounce({ ...announce, eiin: e.target.value })}
+                  placeholder="e.g. 108103"
+                />
+              </Field>
+            )}
+            <Field label="Title">
+              <input
+                value={announce.title}
+                onChange={(e) => setAnnounce({ ...announce, title: e.target.value })}
+                placeholder="e.g. Portal maintenance tonight"
+              />
+            </Field>
+          </div>
+          <Field label="Message (optional)">
+            <textarea
+              rows={3}
+              value={announce.body}
+              onChange={(e) => setAnnounce({ ...announce, body: e.target.value })}
+            />
+          </Field>
+          <button type="submit" disabled={!announce.title.trim()}>Send announcement</button>
+        </form>
       </div>
 
       <div className="card">

@@ -32,11 +32,8 @@ BEGIN
     PERFORM pg_advisory_xact_lock(42);
 
     -- Keep finalized admissions; reconsider everyone else this round.
-    -- DELETED is excluded deliberately: a withdrawn application must stay
-    -- withdrawn. Without that guard this UPDATE would quietly resurrect it to
-    -- SUBMITTED and enter it into the draw again.
     DELETE FROM admission_result WHERE status <> 'ADMITTED';
-    UPDATE application SET status = 'SUBMITTED' WHERE status NOT IN ('ADMITTED', 'DELETED');
+    UPDATE application SET status = 'SUBMITTED' WHERE status <> 'ADMITTED';
 
     -- One random draw per applicant for this whole run, so every one of their
     -- choices is judged on the same number (a student can't get a "fresh"

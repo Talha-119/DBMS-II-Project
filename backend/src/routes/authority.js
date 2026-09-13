@@ -96,4 +96,32 @@ router.get('/results', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// --- Notification inbox (school-authority side) ---------------------------
+// Populated by DB triggers when an applicant lists this school or the lottery
+// fills one of its seats (see database/triggers/03_notifications.sql), plus
+// any admin announcement addressed to this EIIN. requireRole above already
+// guarantees req.user.eiin identifies exactly this school's single account.
+router.get('/notifications', asyncHandler(async (req, res) => {
+  const { rows } = await query(
+    `SELECT notification_id, application_id, type, title, body, is_read, created_at
+     FROM notification WHERE audience = 'SCHOOL_AUTHORITY' AND eiin = $1
+     ORDER BY created_at DESC LIMIT 50`, [req.user.eiin]);
+  res.json(rows);
+}));
+
+router.post('/notifications/:id/read', asyncHandler(async (req, res) => {
+  await query(
+    `UPDATE notification SET is_read = TRUE
+     WHERE notification_id = $1 AND audience = 'SCHOOL_AUTHORITY' AND eiin = $2`,
+    [req.params.id, req.user.eiin]);
+  res.json({ read: true });
+}));
+
+router.post('/notifications/read-all', asyncHandler(async (req, res) => {
+  await query(
+    `UPDATE notification SET is_read = TRUE WHERE audience = 'SCHOOL_AUTHORITY' AND eiin = $1`,
+    [req.user.eiin]);
+  res.json({ read: true });
+}));
+
 module.exports = router;
