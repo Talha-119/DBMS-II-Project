@@ -363,6 +363,54 @@ input.valid { border-color: var(--ok); }
 .doc-choices li { margin-bottom: 4px; font-size: 14px; }
 .watermark { text-align: center; color: var(--muted); font-size: 12px; margin-top: 14px; }
 
+/* Notifications ------------------------------------------------------------ */
+/* Header bell + dropdown (NotificationBell.jsx, staff only) and the reusable
+   .notif-list/.notif-title/... parts also used inline on the applicant
+   Retrieve page (.notif-inline wraps them there instead of .notif-panel). */
+.notif { position: relative; margin-left: 4px; }
+.notif-bell {
+  background: transparent; box-shadow: none; padding: 7px 10px; font-size: 17px;
+  border-radius: 50%; position: relative; line-height: 1;
+}
+.notif-bell:hover { background: rgba(255,255,255,.14); }
+.notif-count {
+  position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 3px;
+  background: var(--danger); color: #fff; border-radius: 999px; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+  box-shadow: 0 0 0 2px var(--brand-dark);
+}
+.notif-panel {
+  position: absolute; right: 0; top: calc(100% + 10px); width: 340px; max-width: 88vw;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); z-index: 50; overflow: hidden; text-align: left;
+}
+.notif-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line-soft);
+}
+.notif-head b { font-family: var(--font-display); font-size: 14.5px; }
+.notif-markall { padding: 5px 10px; font-size: 12px; }
+.notif-empty { padding: 18px 14px; color: var(--muted); font-size: 13px; text-align: center; }
+.notif-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
+.notif-list li {
+  padding: 11px 14px; border-bottom: 1px solid var(--line-soft); cursor: pointer; transition: background .12s ease;
+}
+.notif-list li:last-child { border-bottom: none; }
+.notif-list li:hover { background: var(--brand-tint); }
+.notif-list li.unread { background: var(--brand-light); }
+.notif-list li.unread .notif-title::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--brand); margin-right: 7px; vertical-align: middle;
+}
+.notif-title { font-weight: 600; font-size: 13.5px; color: var(--ink); }
+.notif-body { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; }
+.notif-time { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* Inline variant on the applicant Retrieve page: a plain card, not a dropdown. */
+.notif-inline-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.notif-inline-head h3 { margin-bottom: 12px; }
+.notif-inline .notif-list { border: 1px solid var(--line-soft); border-radius: var(--radius-sm); }
+
 /* Responsive ------------------------------------------------------------- */
 @media (max-width: 640px) {
   .site-header .bar { padding: 12px 16px; gap: 12px; }
@@ -372,4 +420,5 @@ input.valid { border-color: var(--ok); }
   .hero h1 { font-size: 24px; }
   .doc { padding: 20px; }
   .doc-row { grid-template-columns: 1fr; }
+  .notif-panel { right: -12px; width: min(340px, 92vw); }
 }

@@ -123,18 +123,6 @@ export default function Apply() {
   const noteLocked = () => setLockNote(LOCK_MSG);
   const lockRO = { readOnly: true, className: 'locked', onMouseDown: noteLocked, onFocus: noteLocked };
 
-  // Application rate limits, reported by /lookup/applicant-limits and enforced
-  // by triggers on `application`. A student holds at most MAX_APPLICATIONS live
-  // applications, at most one per area, and may use each school once. Deleted
-  // applications release all three, so these numbers move when an admin approves
-  // a deletion. Surfaced here so a spent area is refused before the form is
-  // filled rather than at the final submit.
-  const lim = f.limits;
-  const usedPostcodes = (lim && lim.used_postcodes) || [];
-  const usedSchoolCount = ((lim && lim.used_schools) || []).length;
-  const noAllowanceLeft = Boolean(lim) && lim.applications_remaining <= 0;
-  const areaAlreadyUsed = Boolean(f.applying.postcode) && usedPostcodes.includes(f.applying.postcode);
-
   // Load geography + school names once (drives the dropdowns / suggestions).
   useEffect(() => {
     api.get('/lookup/areas').then((r) => setGeo(buildGeo(r.data))).catch(() => {});
@@ -232,20 +220,10 @@ export default function Apply() {
         // admitted into one class per session, and their school history is fixed.
         patch.desired_class = String(st.desired_class || ''); patch.prev_school_name = st.prev_school_name || '';
       } catch { /* first-time applicant — nothing to pre-fill */ }
-      // How many applications this student may still file, and which areas and
-      // schools are already spent. Never 404s, so a first-time applicant gets
-      // the full allowance here.
-      try {
-        const { data: lim } = await api.get(`/lookup/applicant-limits/${encodeURIComponent(bc)}`);
-        patch.limits = lim;
-      } catch { /* limits unavailable — the database still enforces them on submit */ }
       up(patch);
-      const allowance = patch.limits
-        ? ` You may file ${patch.limits.applications_remaining} more application(s) of ${patch.limits.max_applications}, one per area.`
-        : '';
       setMsg(patch.returning
-        ? `Welcome back, ${data.name}. Your personal details were confirmed by your earlier application and are locked — verify your registered mobile (OTP), then pick your new area & schools.${allowance}`
-        : `Verified: ${data.name} (${data.gender}, born ${data.dob.slice(0, 10)}).${allowance}`);
+        ? `Welcome back, ${data.name}. Your personal details were confirmed by your earlier application and are locked — verify your registered mobile (OTP), then pick your new area & schools.`
+        : `Verified: ${data.name} (${data.gender}, born ${data.dob.slice(0, 10)}).`);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -269,18 +247,9 @@ export default function Apply() {
   async function loadSeats() {
     clear(); setBusy(true);
     try {
-      // `bc` makes the server leave out schools this student already holds in a
-      // live application. One student gets one shot per school, so listing them
-      // again would only lead to a rejected submit.
-      const { data } = await api.get(
-        `/lookup/seats?postcode=${f.applying.postcode}&class=${f.desired_class}&gender=${f.gender}`
-        + `&bc=${encodeURIComponent(f.bc_no.trim())}`);
+      const { data } = await api.get(`/lookup/seats?postcode=${f.applying.postcode}&class=${f.desired_class}&gender=${f.gender}`);
       up({ seats: data });
-      if (!data.length) {
-        setMsg(usedSchoolCount
-          ? 'No available seats left for this area / class / gender that you have not already applied to.'
-          : 'No available seats for this area / class / gender.');
-      }
+      if (!data.length) setMsg('No available seats for this area / class / gender.');
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -355,8 +324,6 @@ export default function Apply() {
     if (!presentValid || !f.present_detail.trim()) x.push('Complete a valid present address (Class & Address step).');
     if (!permanentValid || !f.permanent_detail.trim()) x.push('Complete a valid permanent address (Class & Address step).');
     if (!applyingValid) x.push('Choose a valid applying area (Schools & Choices step).');
-    if (areaAlreadyUsed) x.push(`You already have an application in area ${f.applying.postcode} — only one application per area is allowed (Schools & Choices step).`);
-    if (noAllowanceLeft) x.push(`You already hold the maximum of ${lim.max_applications} applications — delete one before filing another.`);
     if (!f.choices.length) x.push('Add at least one school choice (Schools & Choices step).');
     return x;
   }
@@ -607,35 +574,10 @@ export default function Apply() {
         <>
           <h3>Applying School Area</h3>
           <p className="muted">Pick the area you want to apply in, then load its available seats.</p>
-
-          {lim && (
-            <p className="help">
-              Applications used: <b>{lim.applications_used}</b> of <b>{lim.max_applications}</b>.
-              {usedPostcodes.length > 0 && <> Already applied in area(s) <b>{usedPostcodes.join(', ')}</b> — one application per area.</>}
-              {usedSchoolCount > 0 && <> Schools you have already applied to are not listed below.</>}
-            </p>
-          )}
-
-          {noAllowanceLeft && (
-            <Alert kind="error">
-              You already hold {lim.applications_used} applications, which is the maximum.
-              Delete one from the Retrieve page (an admin must approve it) before filing another.
-            </Alert>
-          )}
-
           <AddressPicker geo={geo} value={f.applying}
             onChange={(v) => up({ applying: v, ...(v.postcode !== f.applying.postcode ? { choices: [], seats: [] } : {}) })} />
-
-          {areaAlreadyUsed && (
-            <Alert kind="error">
-              You already have an application in area {f.applying.postcode}. Only one application per
-              area is allowed — pick a different area, or delete the existing application first.
-            </Alert>
-          )}
-
           <div className="btn-row">
-            <button className={applyingValid && !areaAlreadyUsed && !noAllowanceLeft ? 'btn-ready' : 'btn-secondary'}
-              onClick={loadSeats} disabled={busy || !applyingValid || areaAlreadyUsed || noAllowanceLeft}>Load available seats</button>
+            <button className={applyingValid ? 'btn-ready' : 'btn-secondary'} onClick={loadSeats} disabled={busy || !applyingValid}>Load available seats</button>
           </div>
           {areaEligible && <p className="help">Your present address is in this area — you qualify for the <b>Area</b> quota on these choices.</p>}
 

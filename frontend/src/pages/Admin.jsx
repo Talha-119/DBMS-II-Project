@@ -20,6 +20,10 @@ export default function Admin() {
   const [schoolClasses, setSchoolClasses] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [schoolSearch, setSchoolSearch] = useState('');
+  const [resultSearch, setResultSearch] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [announce, setAnnounce] = useState({ audience: 'APPLICANT', eiin: '', title: '', body: '' });
 
   async function loadAll() {
     setErr('');
@@ -105,6 +109,43 @@ export default function Admin() {
     const value = cur === 'TRUE' ? 'FALSE' : 'TRUE';
     try { await api.post('/admin/settings', { key: 'ROUND_OPEN', value }); loadAll(); }
     catch (e) { setErr(apiError(e)); }
+  }
+
+  // Manual counterpart to the automatic notifications (submit, payment, results,
+  // ...): pushes a one-off announcement straight into an inbox. See
+  // sp_broadcast_notification in database/procedures/04_notifications.sql.
+  async function sendAnnouncement(e) {
+    e.preventDefault(); setErr(''); setMsg('');
+    try {
+      await api.post('/admin/notifications/broadcast', {
+        audience: announce.audience,
+        eiin: announce.audience === 'SCHOOL_AUTHORITY' && announce.eiin ? announce.eiin : undefined,
+        title: announce.title,
+        body: announce.body || undefined,
+      });
+      setMsg(
+        announce.audience === 'APPLICANT'
+          ? 'Announcement sent to every applicant.'
+          : announce.eiin
+          ? `Announcement sent to school ${announce.eiin}.`
+          : 'Announcement sent to every school authority.'
+      );
+      setAnnounce({ audience: announce.audience, eiin: '', title: '', body: '' });
+    } catch (e) { setErr(apiError(e)); }
+  }
+
+  // The button always states the action it performs ("Close applications"),
+  // never the state it is in – the chip beside it carries the state.
+  async function setRoundOpen(open) {
+    setErr(''); setMsg('');
+    if (!window.confirm(open
+      ? 'Open applications? Applicants will be able to submit new forms again.'
+      : 'Close applications? No new form can be submitted until you re-open.')) return;
+    try {
+      await api.post('/admin/round', { open });
+      setMsg(open ? 'Applications are now OPEN.' : 'Applications are now CLOSED.');
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   async function deleteSchool(eiin) {

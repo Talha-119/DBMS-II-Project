@@ -12,10 +12,28 @@ export default function Retrieve() {
   const [code, setCode] = useState('');
   const [token, setToken] = useState('');
   const [apps, setApps] = useState(null);
+  const [notifs, setNotifs] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const clear = () => { setErr(''); setMsg(''); };
+
+  async function loadNotifications(tok) {
+    try {
+      const res = await axios.get('/api/applications/notifications', { headers: { Authorization: `Bearer ${tok}` } });
+      setNotifs(res.data);
+    } catch { /* non-critical: the applications table above still loads fine without it */ }
+  }
+
+  async function markNotifRead(id) {
+    setNotifs((prev) => prev.map((n) => (n.notification_id === id ? { ...n, is_read: true } : n)));
+    try { await axios.post(`/api/applications/notifications/${id}/read`, {}, { headers: { Authorization: `Bearer ${token}` } }); } catch { /* best-effort */ }
+  }
+
+  async function markAllNotifsRead() {
+    setNotifs((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    try { await axios.post('/api/applications/notifications/read-all', {}, { headers: { Authorization: `Bearer ${token}` } }); } catch { /* best-effort */ }
+  }
 
   async function start() {
     clear(); setBusy(true);
@@ -31,6 +49,7 @@ export default function Retrieve() {
     try {
       const { data } = await api.post('/applications/retrieve', { bc_no: bc.trim(), dob, code: code.trim() });
       setToken(data.token); setApps(data.applications);
+      loadNotifications(data.token);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -53,6 +72,7 @@ export default function Retrieve() {
       await axios.post(`/api/applications/${id}/pay`, { method: 'CARD' }, { headers: { Authorization: `Bearer ${token}` } });
       setMsg('Fee paid successfully.');
       setApps((prev) => prev.map((a) => (a.application_id === id ? { ...a, payment_status: 'PAID' } : a)));
+      loadNotifications(token);
     } catch (e) { setErr('Payment failed: ' + apiError(e)); }
   }
 
@@ -94,6 +114,29 @@ export default function Retrieve() {
 
       {apps && (
         <>
+          {notifs.length > 0 && (
+            <div className="card notif-inline">
+              <div className="notif-inline-head">
+                <h3>Notifications</h3>
+                {notifs.some((n) => !n.is_read) && (
+                  <button className="btn-secondary" onClick={markAllNotifsRead}>Mark all read</button>
+                )}
+              </div>
+              <ul className="notif-list">
+                {notifs.map((n) => (
+                  <li
+                    key={n.notification_id}
+                    className={n.is_read ? '' : 'unread'}
+                    onClick={() => !n.is_read && markNotifRead(n.notification_id)}
+                  >
+                    <div className="notif-title">{n.title}</div>
+                    {n.body && <div className="notif-body">{n.body}</div>}
+                    <div className="notif-time">{new Date(n.created_at).toLocaleString()}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {apps.length === 0 && <p className="muted">No applications found.</p>}
           {apps.length > 0 && (
             <table>

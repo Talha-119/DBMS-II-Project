@@ -214,5 +214,45 @@ router.post('/lottery/disqualify',
   })
 );
 
+// --- Notification inbox (master-admin side) --------------------------------
+// A single shared inbox for the role: DB triggers post here for events an
+// office handles collectively (a deletion request pending review, a lottery
+// round finishing) — see database/triggers/03_notifications.sql.
+router.get('/notifications', asyncHandler(async (_req, res) => {
+  const { rows } = await query(
+    `SELECT notification_id, application_id, type, title, body, is_read, created_at
+     FROM notification WHERE audience = 'MASTER_ADMIN'
+     ORDER BY created_at DESC LIMIT 50`);
+  res.json(rows);
+}));
+
+router.post('/notifications/:id/read', asyncHandler(async (req, res) => {
+  await query(
+    `UPDATE notification SET is_read = TRUE WHERE notification_id = $1 AND audience = 'MASTER_ADMIN'`,
+    [req.params.id]);
+  res.json({ read: true });
+}));
+
+router.post('/notifications/read-all', asyncHandler(async (_req, res) => {
+  await query(`UPDATE notification SET is_read = TRUE WHERE audience = 'MASTER_ADMIN'`);
+  res.json({ read: true });
+}));
+
+// Push a manually-composed announcement into every applicant's inbox, or a
+// school authority's (one EIIN, or every school if none given). Thin call
+// into sp_broadcast_notification, which validates the audience/EIIN.
+router.post('/notifications/broadcast',
+  body('audience').isIn(['APPLICANT', 'SCHOOL_AUTHORITY']),
+  body('title').isString().trim().notEmpty(),
+  body('body').optional({ nullable: true }).isString(),
+  body('eiin').optional({ nullable: true }).isString(),
+  validate,
+  asyncHandler(async (req, res) => {
+    const { audience, title } = req.body;
+    await query('CALL sp_broadcast_notification($1, $2, $3, $4)',
+      [audience, req.body.eiin || null, title, req.body.body || null]);
+    res.status(201).json({ sent: true });
+  }));
+
 module.exports = router;
 
