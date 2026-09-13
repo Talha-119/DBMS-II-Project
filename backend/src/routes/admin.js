@@ -36,15 +36,79 @@ router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
   res.json({ deleted: true });
 }));
 
+// Operations dashboard ------------------------------------------------------
+// Everything the admin's two control switches need in one call: whether the
+// application window is open, whether results are published, and whether a draw
+// exists that has NOT been published yet (the state the separate "Run lottery"
+// and "Publish results" buttons exist to make visible).
+router.get('/dashboard', asyncHandler(async (_req, res) => {
+  const settings = await query(
+    `SELECT key, value, updated_at FROM app_setting
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
+  const s = Object.fromEntries(settings.rows.map((r) => [r.key, r.value]));
+  const publishedAt = settings.rows.find((r) => r.key === 'RESULT_READY')?.updated_at || null;
+
+  const { rows } = await query(
+    `SELECT
+       (SELECT count(*) FROM application)                                  AS applications,
+       (SELECT count(*) FROM admission_result)                             AS results,
+       (SELECT count(*) FROM admission_result WHERE status = 'ADMITTED')   AS admitted,
+       (SELECT count(*) FROM admission_result WHERE status = 'WAITING')    AS waiting,
+       (SELECT max(decided_at) FROM admission_result)                      AS last_run_at`);
+  const c = rows[0];
+
+  res.json({
+    round_open: s.ROUND_OPEN === 'TRUE',
+    result_ready: s.RESULT_READY === 'TRUE',
+    current_round: parseInt(s.CURRENT_ROUND || '0', 10),
+    results_pending_publish: Number(c.results) > 0 && s.RESULT_READY !== 'TRUE',
+    published_at: s.RESULT_READY === 'TRUE' ? publishedAt : null,
+    last_run_at: c.last_run_at,
+    counts: {
+      applications: Number(c.applications),
+      results: Number(c.results),
+      admitted: Number(c.admitted),
+      waiting: Number(c.waiting),
+    },
+  });
+}));
+
+// Application window --------------------------------------------------------
+router.post('/round',
+  body('open').isBoolean(),
+  validate,
+  asyncHandler(async (req, res) => {
+    await query('CALL sp_set_round_open($1::boolean)', [req.body.open]);
+    res.json({ round_open: req.body.open });
+  }));
+
 // Lottery -------------------------------------------------------------------
+// Runs the draw ONLY. It closes the application window and writes the results,
+// but leaves them unpublished — the applicant side and the public result
+// lookup stay unaware until POST /admin/results/publish. Reporting `published:
+// false` here is what stops the UI claiming the opposite.
 router.post('/lottery',
   body('round').optional().isInt({ min: 1 }),
   validate,
   asyncHandler(async (req, res) => {
     const round = req.body.round || 1;
     await query('CALL sp_run_lottery($1::int)', [round]);
-    res.json({ ran: true, round });
+    res.json({ ran: true, round, published: false });
   }));
+
+// Publication ---------------------------------------------------------------
+// Deliberately separate from the draw: allocating seats and telling the country
+// about it are two different decisions, and only the second is irreversible in
+// practice.
+router.post('/results/publish', asyncHandler(async (_req, res) => {
+  await query('CALL sp_publish_results()');
+  res.json({ result_ready: true });
+}));
+
+router.post('/results/unpublish', asyncHandler(async (_req, res) => {
+  await query('CALL sp_unpublish_results()');
+  res.json({ result_ready: false });
+}));
 
 // Deletion approvals --------------------------------------------------------
 router.get('/deletion-requests', asyncHandler(async (_req, res) => {
@@ -190,7 +254,10 @@ router.get('/lottery-results', asyncHandler(async (req, res) => {
     FROM vw_admission_result ar
     JOIN application a ON a.application_id = ar.application_id
     WHERE ($1::text IS NULL OR ar.application_id ILIKE $1 OR ar.student_name ILIKE $1 OR ar.bc_no ILIKE $1)
-      AND ($2::text IS NULL OR ar.status = $2);
+      -- ar.status is result_status_t, so the text parameter has to be cast:
+      -- without it every call failed with "operator does not exist:
+      -- result_status_t = text", which 400'd the whole results viewer.
+      AND ($2::text IS NULL OR ar.status = $2::result_status_t);
   `, [search ? `%${search}%` : null, status && status !== 'ALL' ? status : null]);
   res.json(rows);
 }));
