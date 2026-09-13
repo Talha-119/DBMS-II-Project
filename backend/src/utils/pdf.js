@@ -1,9 +1,17 @@
 'use strict';
 const PDFDocument = require('pdfkit');
 
+// The passport-photo slot on the printed form, in PDF points. 90 x 116 is the
+// 7:9 shape the stored image already has (see utils/photo.js), so PDFKit scales
+// it without distorting the face. It sits in the top-right corner beside the
+// header, which is where a real admission form puts it.
+const PHOTO_BOX = { x: 450, y: 50, w: 90, h: 116 };
+
 // Render the official "Applicant Copy" PDF from a vw_applicant_copy row and pipe
-// it to the HTTP response.
-function streamApplicantCopy(copy, res) {
+// it to the HTTP response. `photo` is the JPEG from student.photo, or null for an
+// applicant who has none -- in which case the slot is printed empty rather than
+// omitted, so both copies are the same document with the same layout.
+function streamApplicantCopy(copy, res, photo) {
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${copy.application_id}.pdf"`);
@@ -11,13 +19,37 @@ function streamApplicantCopy(copy, res) {
 
   const line = (y) => doc.moveTo(50, y).lineTo(545, y).strokeColor('#cccccc').stroke().strokeColor('black');
 
-  // Header
-  doc.fontSize(16).font('Helvetica-Bold').text('Government School Admission System', { align: 'center' });
+  // Header. Centred inside a width that stops short of the photo box, so the
+  // title cannot run underneath the photograph.
+  const headWidth = PHOTO_BOX.x - 50 - 10;
+  doc.fontSize(16).font('Helvetica-Bold').text('Government School Admission System', 50, 50, { width: headWidth, align: 'center' });
   doc.fontSize(11).font('Helvetica').fillColor('#555')
-     .text('Directorate of Secondary and Higher Education', { align: 'center' });
+     .text('Directorate of Secondary and Higher Education', 50, doc.y, { width: headWidth, align: 'center' });
   doc.fillColor('black').moveDown(0.3);
-  doc.fontSize(13).font('Helvetica-Bold').text('APPLICANT COPY', { align: 'center' });
-  doc.moveDown(0.5);
+  doc.fontSize(13).font('Helvetica-Bold').text('APPLICANT COPY', 50, doc.y, { width: headWidth, align: 'center' });
+
+  // Photograph slot. Drawn as a bordered box either way: a form with an empty
+  // photo box reads as "no photo was supplied", whereas a form that silently
+  // omits the box reads as though it never asked for one.
+  doc.rect(PHOTO_BOX.x, PHOTO_BOX.y, PHOTO_BOX.w, PHOTO_BOX.h).lineWidth(0.8).strokeColor('#999').stroke();
+  if (photo && photo.length) {
+    // The stored image is already exactly this aspect ratio, so `fit` scales it
+    // to fill the box without letterboxing; `align`/`valign` keep it centred if
+    // a future size change ever makes the ratios differ.
+    doc.image(photo, PHOTO_BOX.x, PHOTO_BOX.y, {
+      fit: [PHOTO_BOX.w, PHOTO_BOX.h], align: 'center', valign: 'center',
+    });
+  } else {
+    doc.font('Helvetica').fontSize(8).fillColor('#999')
+       .text('No photograph on file', PHOTO_BOX.x + 4, PHOTO_BOX.y + PHOTO_BOX.h / 2 - 10,
+             { width: PHOTO_BOX.w - 8, align: 'center' });
+  }
+  doc.strokeColor('black').fillColor('black');
+
+  // Everything after the header runs the full width again, so it has to start
+  // below the photo box rather than beside it.
+  doc.x = 50;
+  doc.y = Math.max(doc.y + 6, PHOTO_BOX.y + PHOTO_BOX.h + 10);
   line(doc.y); doc.moveDown(0.5);
 
   const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');

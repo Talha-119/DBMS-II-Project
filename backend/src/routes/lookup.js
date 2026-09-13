@@ -179,7 +179,12 @@ router.get('/student/:bc', asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
             present_postcode, present_detail, permanent_postcode, permanent_detail,
-            desired_class, prev_school_name
+            desired_class, prev_school_name,
+            -- Whether a photograph is on file, never the photograph itself: the
+            -- form only needs to know that the upload slot is already filled and
+            -- locked. The image is served separately, and behind a token, by
+            -- GET /api/applications/student/:bc/photo.
+            (photo IS NOT NULL) AS has_photo
      FROM student WHERE bc_no = $1`, [req.params.bc]);
   if (!rows.length) return res.status(404).json({ error: 'No existing profile' });
   res.json(rows[0]);

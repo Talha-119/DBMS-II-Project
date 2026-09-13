@@ -189,6 +189,23 @@ BEGIN
         RAISE EXCEPTION 'Student profile % is locked by their first application and cannot be modified', OLD.bc_no
             USING ERRCODE = '42501';
     END IF;
+
+    -- The photograph is part of the same lock, with one carve-out: an EMPTY slot
+    -- may still be filled. Every student who applied before the column existed
+    -- has NULL there, and so does anyone who submitted without uploading one, so
+    -- freezing NULL as hard as a real value would mean those applicants could
+    -- never have a photo on their copy at all. Once a photo IS on file it is
+    -- frozen exactly like the religion or the guardian NID beside it — otherwise
+    -- a later application could swap the face on an identity document that
+    -- earlier applications also print, which is the whole shape of BUG-001.
+    --
+    -- Clearing a photo back to NULL is a change like any other, so it is refused
+    -- too: `IS DISTINCT FROM` covers non-NULL -> NULL.
+    IF OLD.photo IS NOT NULL AND NEW.photo IS DISTINCT FROM OLD.photo THEN
+        RAISE EXCEPTION 'The photograph on student profile % was set by an earlier application and cannot be replaced', OLD.bc_no
+            USING ERRCODE = '42501';
+    END IF;
+
     RETURN NEW;
 END;
 $$;
@@ -196,6 +213,32 @@ $$;
 CREATE OR REPLACE TRIGGER trg_student_profile_immutable
     BEFORE UPDATE ON student
     FOR EACH ROW EXECUTE FUNCTION trg_fn_student_profile_immutable();
+
+-- Whatever ends up in student.photo must actually be a JPEG. The upload route
+-- re-encodes every accepted image before storing it, so this never fires on API
+-- traffic; it is here so the guarantee survives a direct INSERT/UPDATE too. The
+-- serving endpoint and the PDF both label those bytes image/jpeg without
+-- inspecting them, and this is what earns them the right to.
+--
+-- A trigger rather than a CHECK constraint only because migrate.js creates
+-- tables (migrations/) before functions/, so fn_is_jpeg does not exist yet when
+-- `student` is built. The size bound, which needs no function, IS a CHECK on
+-- the column (chk_student_photo_size).
+CREATE OR REPLACE FUNCTION trg_fn_student_photo_is_jpeg()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NOT fn_is_jpeg(NEW.photo) THEN
+        RAISE EXCEPTION 'student.photo must be JPEG image data (the bytes given for % are not)', NEW.bc_no
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_student_photo_is_jpeg
+    BEFORE INSERT OR UPDATE ON student
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_student_photo_is_jpeg();
 
 -- Touch student.updated_at on every update.
 CREATE OR REPLACE FUNCTION trg_fn_touch_updated_at()

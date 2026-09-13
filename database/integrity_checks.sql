@@ -168,6 +168,19 @@ SELECT 'limits', 'no DELETED application holds a lottery result',
   JOIN application a ON a.application_id = r.application_id
  WHERE a.status = 'DELETED'
 
+-- ---- Photograph: BUG-005. Anything served as image/jpeg has to be one -------
+-- Stored photos go through sharp's re-encode before they are written, so these
+-- assert that nothing arrived by another route. The column is nullable, so "no
+-- photo" is not a violation -- only a photo that is not what it claims to be.
+UNION ALL
+SELECT 'photo', 'every stored photo is JPEG data',
+       count(*) FROM student WHERE photo IS NOT NULL AND NOT fn_is_jpeg(photo)
+
+UNION ALL
+SELECT 'photo', 'every stored photo is within the size bound',
+       count(*) FROM student
+ WHERE photo IS NOT NULL AND octet_length(photo) NOT BETWEEN 100 AND 524288
+
 )
 SELECT category, check_name, violations,
        CASE WHEN violations = 0 THEN 'PASS' ELSE 'FAIL' END AS status

@@ -18,6 +18,13 @@ export const empty = {
   present: { ...blankArea }, present_detail: '',
   permanent: { ...blankArea }, permanent_detail: '',
   prev_school_name: '',
+  // Passport photograph. `photo_file` is the File the applicant picked this
+  // session and `photo_preview` its local object URL -- local because a
+  // first-time applicant has no `student` row yet, so there is nowhere on the
+  // server for the image to live until the submit succeeds. `has_stored_photo`
+  // is the other case: a returning applicant whose photo is already in the
+  // database, which the form displays from the server and refuses to replace.
+  photo_file: null, photo_preview: '', photo_err: '', has_stored_photo: false,
   applying: { ...blankArea }, seats: [], choices: [],
   // What the application limits leave this applicant (from
   // /lookup/applicant-limits). Derived from the birth certificate like
@@ -45,6 +52,16 @@ export function bcChanged(state, raw) {
 
 // Everything derived from the old certificate goes; only the newly typed number
 // survives, and the applicant must verify again before they can continue.
+//
 export function resetForBc(raw) {
   return { ...empty, bc_no: raw };
+}
+
+// A photo preview is an object URL, which the browser keeps alive until it is
+// explicitly revoked -- so whenever one is replaced or thrown away (a new file
+// picked, the certificate changed, the form reset) the old one is released here
+// instead of leaking for the lifetime of the tab. Guarded so this module still
+// imports cleanly outside a browser, where URL.revokeObjectURL does not exist.
+export function releasePreview(url) {
+  if (url && typeof URL !== 'undefined' && URL.revokeObjectURL) URL.revokeObjectURL(url);
 }

@@ -12,6 +12,7 @@ const { requireAuth } = require('../middleware/auth');
 const { asyncHandler } = require('../utils/helpers');
 const { issueOtp, verifyOtp } = require('../services/otpService');
 const { streamApplicantCopy } = require('../utils/pdf');
+const { photoUpload, normalizePhoto } = require('../utils/photo');
 
 // Gate for applicant-copy access. requireAuth verifies the JWT (applicant token
 // or staff token) and sets req.user; ensureCanAccess then authorizes by ownership.
@@ -20,6 +21,33 @@ const applicantAccess = requireAuth;
 async function fetchCopy(applicationId) {
   const { rows } = await query('SELECT * FROM vw_applicant_copy WHERE application_id = $1', [applicationId]);
   return rows[0] || null;
+}
+
+// The photograph is read with its own targeted query and is deliberately NOT in
+// vw_applicant_copy: that view backs every ordinary lookup and JSON response, so
+// adding a BYTEA to it would drag ~30KB of image through queries that only ever
+// wanted a name and a status. Only the two places that actually render the photo
+// (the serving endpoint and the PDF) pay for it.
+async function fetchPhoto(bcNo) {
+  const { rows } = await query('SELECT photo FROM student WHERE bc_no = $1', [bcNo]);
+  return (rows[0] && rows[0].photo) || null;
+}
+
+// A multipart submission carries every field as a string, so `choices` arrives as
+// JSON text rather than as an array and would fail body('choices').isArray()
+// before the handler ever ran. Parsing it here keeps ONE set of validators and
+// one handler for both shapes: the form posts multipart when a photo is
+// attached and plain JSON when it is not (and multer ignores non-multipart
+// requests entirely, so JSON clients are untouched).
+function parseMultipartFields(req, _res, next) {
+  if (req.body && typeof req.body.choices === 'string') {
+    try {
+      req.body.choices = JSON.parse(req.body.choices);
+    } catch {
+      return next(Object.assign(new Error('The `choices` field was not valid JSON.'), { status: 400 }));
+    }
+  }
+  next();
 }
 
 // Running the lottery sets application.status to ADMITTED / WAITING immediately,
@@ -67,8 +95,13 @@ router.post('/verify-otp',
   }));
 
 // --- Submit a new application. Mobile ownership is proven by an `apply_token`
-//     (from /verify-otp, the new UI flow) OR a raw `otp_code` (back-compat). ---
+//     (from /verify-otp, the new UI flow) OR a raw `otp_code` (back-compat).
+//     Accepts either application/json (no photograph) or multipart/form-data
+//     with a `photo` file part; multer passes non-multipart requests straight
+//     through, so both shapes reach the same validators and handler. ---
 router.post('/',
+  photoUpload,
+  parseMultipartFields,
   body('bc_no').isString().notEmpty(),
   body('religion').isIn(['ISLAM', 'HINDU', 'CHRISTIAN', 'BUDDHIST', 'OTHER']),
   body('mobile').matches(/^01[3-9][0-9]{8}$/),
@@ -98,16 +131,25 @@ router.post('/',
       return res.status(400).json({ error: 'Mobile not verified. Please verify the OTP for the exact mobile number you are submitting with.' });
     }
 
+    // Decoded, re-encoded and bounded before it goes anywhere near the
+    // database (utils/photo.js). A bad file raises a 400 here, so the
+    // submission is refused before any row is written -- not half-written and
+    // then rolled back.
+    const photo = req.file ? await normalizePhoto(req.file.buffer) : null;
+
+    // The photo is an argument to the procedure rather than a follow-up UPDATE,
+    // so profile + application + choices + photograph are one transaction: if
+    // any rule fails, nothing at all is stored, including the image.
     const { rows } = await query(
-      `CALL sp_submit_application($1,$2::religion_t,$3,$4,$5,$6,$7,$8,$9,$10,$11::int,$12,$13,$14::jsonb,$15)`,
+      `CALL sp_submit_application($1,$2::religion_t,$3,$4,$5,$6,$7,$8,$9,$10,$11::int,$12,$13,$14::jsonb,$15::bytea,$16)`,
       [
         b.bc_no, b.religion, b.mobile,
         b.father_nid || null, b.mother_nid || null, b.local_guardian_nid || null,
         b.present_postcode, b.present_detail, b.permanent_postcode, b.permanent_detail,
         b.desired_class, b.applying_postcode, b.prev_school_name || null,
-        JSON.stringify(b.choices), null,
+        JSON.stringify(b.choices), photo, null,
       ]);
-    res.status(201).json({ application_id: rows[0].p_application_id });
+    res.status(201).json({ application_id: rows[0].p_application_id, photo_stored: Boolean(photo) });
   }));
 
 // --- Retrieve step 1: confirm BC + DOB, send OTP to the registered mobile ---
@@ -183,6 +225,55 @@ function requireApplicantScope(req, res) {
   return true;
 }
 
+// --- Serve the stored photograph as an image -----------------------------
+// Reads the bytes straight out of Postgres and streams them as image/jpeg, which
+// is also the honest demo of where the photo actually lives: reload the page and
+// the picture comes back from the database, not from anything the browser kept.
+//
+// It is NOT public. The obvious shape for this endpoint would be a public
+// /lookup/student/:bc/photo that a plain <img src> could point at, but that
+// would publish a photograph of any child in the system to anyone who can guess
+// a birth-certificate number -- a much worse trade than it looks, because the
+// photo is the one field here that identifies a person to a stranger on sight.
+// So it is gated, and the caller has to already hold one of:
+//
+//   * an applicant token   -- issued by the retrieve flow (BC + DOB + OTP), and
+//                             bound to this exact bc_no;
+//   * an apply_otp token   -- issued by the apply flow's OTP step, and bound to
+//                             a mobile. It is accepted only when that mobile IS
+//                             the one registered on this student, which for a
+//                             returning applicant is how the form is allowed to
+//                             show them the photo already on file;
+//   * a master-admin session.
+//
+// Declared ahead of GET /:id so its path is read as /student/... rather than as
+// an application id -- the same ordering reason as /notifications below.
+router.get('/student/:bc/photo', requireAuth, asyncHandler(async (req, res) => {
+  const bc = req.params.bc;
+  const { rows } = await query('SELECT mobile, photo FROM student WHERE bc_no = $1', [bc]);
+  const stu = rows[0];
+
+  const u = req.user || {};
+  const allowed =
+    u.role === 'MASTER_ADMIN' ||
+    (u.scope === 'applicant' && u.bc_no === bc) ||
+    (u.scope === 'apply_otp' && stu && u.mobile === stu.mobile);
+  // A caller with no claim on this certificate is told nothing about whether it
+  // exists or has a photo -- one uniform answer, the same discipline the
+  // guardian check uses.
+  if (!allowed) return res.status(403).json({ error: 'Forbidden' });
+
+  if (!stu || !stu.photo) return res.status(404).json({ error: 'No photograph on file' });
+
+  // Always JPEG: every stored photo was re-encoded on the way in (utils/photo.js)
+  // and fn_is_jpeg re-asserts it in the database, so no mime column is needed.
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Content-Length', stu.photo.length);
+  // Personal data behind a short-lived token: never let a shared cache keep it.
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.end(stu.photo);
+}));
+
 router.get('/notifications', applicantAccess, asyncHandler(async (req, res) => {
   if (!requireApplicantScope(req, res)) return;
   const { rows } = await query(
@@ -205,7 +296,11 @@ router.get('/:id/pdf', applicantAccess, asyncHandler(async (req, res) => {
   const copy = await fetchCopy(req.params.id);
   const access = await ensureCanAccess(req, copy);
   if (!access.ok) return res.status(access.status).json({ error: access.error });
-  streamApplicantCopy(await copyForViewer(req, copy), res);
+  // Fetched only here, once access is settled -- see fetchPhoto on why it is not
+  // part of the copy view. An applicant with no photograph gets NULL and the
+  // form prints its empty photo box, exactly like a paper one.
+  const photo = await fetchPhoto(copy.bc_no);
+  streamApplicantCopy(await copyForViewer(req, copy), res, photo);
 }));
 
 // --- Request deletion (verifies a DELETE OTP, queues for master-admin approval) ---
