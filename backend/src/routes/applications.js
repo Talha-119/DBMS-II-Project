@@ -67,7 +67,9 @@ const OUTCOME_STATUSES = new Set(['ADMITTED', 'WAITING', 'NOT_ADMITTED']);
 // administrative state, not a lottery outcome, so it is left alone.
 function maskOutcome(row) {
   if (!row || !OUTCOME_STATUSES.has(row.status)) return row;
-  return { ...row, status: 'SUBMITTED' };
+  // lifecycle_status (ALLOTTED, ENROLLED, ...) would reveal the outcome too.
+  const { lifecycle_status: _hidden, ...rest } = row;
+  return { ...rest, status: 'SUBMITTED' };
 }
 
 async function ensureCanAccess(req, copy) {
@@ -186,7 +188,7 @@ router.post('/retrieve',
     }
 
     const apps = await query(
-      `SELECT a.application_id, s.desired_class, a.status, a.submitted_at,
+      `SELECT a.application_id, s.desired_class, a.status, a.lifecycle_status, a.submitted_at,
               p.thana, p.district, p.division, a.applying_postcode,
               pay.status AS payment_status, pay.amount AS fee_amount
        FROM application a

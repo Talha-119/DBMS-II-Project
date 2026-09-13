@@ -7,9 +7,16 @@ import { Alert, Field, Badge } from '../components/ui.jsx';
 // Which list an applicant landed on, like the portal's merit / 1st / 2nd
 // waiting lists. Round 1 admits = merit list; later rounds = waiting-list calls.
 function tierLabel(r) {
+  if (r.lifecycle_status === 'FORFEITED') return 'Admission cancelled — certificates not submitted by the deadline';
   if (r.status === 'ADMITTED') return r.round > 1 ? `Waiting list ${r.round - 1} (round ${r.round})` : 'Merit list';
   if (r.status === 'WAITING') return `Waiting list ${r.round || 1}`;
   return '—';
+}
+
+// After the school confirms (ENROLLED) or the seat is forfeited, that is the
+// status that matters to the applicant, not the original lottery outcome.
+function shownStatus(r) {
+  return r.lifecycle_status === 'ENROLLED' || r.lifecycle_status === 'FORFEITED' ? r.lifecycle_status : r.status;
 }
 
 export default function Result() {
@@ -79,7 +86,7 @@ export default function Result() {
               <tr key={r.application_id}>
                 <td>{r.application_id}</td>
                 <td>{tierLabel(r)}</td>
-                <td><Badge value={r.status} /></td>
+                <td><Badge value={shownStatus(r)} /></td>
                 <td>{r.allocated_quota || '—'}</td>
                 <td>{r.school_name || '—'}</td>
                 <td>{r.school_type ? (r.school_type === 'GOVERNMENT' ? 'Govt' : 'Non-Govt') : '—'}</td>

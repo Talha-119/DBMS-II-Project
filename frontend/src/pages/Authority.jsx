@@ -11,6 +11,7 @@ export default function Authority() {
   const [applicants, setApplicants] = useState([]);
   const [results, setResults] = useState([]);
   const [classes, setClasses] = useState([]);
+  const [deadline, setDeadline] = useState(null);
   const [form, setForm] = useState({ class_level: '', shift: 'DAY', seat_gender: 'BOTH', total: '' });
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -18,13 +19,13 @@ export default function Authority() {
   async function loadAll() {
     setErr('');
     try {
-      const [m, d, s, a, r, ce] = await Promise.all([
+      const [m, d, s, a, r, ce, rs] = await Promise.all([
         api.get('/authority/me'), api.get('/authority/dashboard'),
         api.get('/authority/seats'), api.get('/authority/applicants'), api.get('/authority/results'),
-        api.get('/authority/class-eligibility'),
+        api.get('/authority/class-eligibility'), api.get('/lookup/round-status'),
       ]);
       setMe(m.data); setDash(d.data); setSeats(s.data); setApplicants(a.data); setResults(r.data);
-      setClasses(ce.data);
+      setClasses(ce.data); setDeadline(rs.data.enroll_deadline);
     } catch (e) { setErr(apiError(e)); }
   }
   useEffect(() => { loadAll(); }, []);
@@ -62,6 +63,17 @@ export default function Authority() {
     setErr(''); setMsg('');
     try { await api.delete(`/authority/seats/${s.seat_id}`); setMsg('Seat row deleted.'); loadAll(); }
     catch (e) { setErr(apiError(e)); }
+  }
+
+  // The student handed their certificates to the school: confirm the admission.
+  async function ensureAdmission(r) {
+    if (!window.confirm(`Confirm that ${r.student_name} (${r.application_id}) submitted their certificates?\n\nThey become a student of this school.`)) return;
+    setErr(''); setMsg('');
+    try {
+      await api.post(`/authority/results/${r.application_id}/enroll`);
+      setMsg(`${r.student_name} is now enrolled.`);
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   function signOut() { logout(); nav('/login'); }
@@ -157,11 +169,25 @@ export default function Authority() {
 
       <div className="card">
         <h3>Results</h3>
+        <p className="help">
+          A lottery admission holds the seat until the student hands their certificates to the school.
+          Press <b>Ensure</b> when they do, and they become a student of this school.
+          {deadline
+            ? ` Certificate deadline: ${new Date(deadline).toLocaleString()}. Admissions not ensured when the next lottery round runs after that are cancelled, and the seat goes to the waiting list.`
+            : ' The master admin has not set a certificate deadline yet.'}
+        </p>
         <table>
-          <thead><tr><th>Applicant ID</th><th>Name</th><th>Status</th><th>Quota</th><th>Class</th></tr></thead>
+          <thead><tr><th>Applicant ID</th><th>Name</th><th>Status</th><th>Quota</th><th>Class</th><th>Admission</th></tr></thead>
           <tbody>
             {results.map((r) => (
-              <tr key={r.application_id}><td>{r.application_id}</td><td>{r.student_name}</td><td><Badge value={r.status} /></td><td>{r.allocated_quota || '—'}</td><td>{r.class_level || '—'}</td></tr>
+              <tr key={r.application_id}>
+                <td>{r.application_id}</td><td>{r.student_name}</td><td><Badge value={r.status} /></td><td>{r.allocated_quota || '—'}</td><td>{r.class_level || '—'}</td>
+                <td>
+                  {r.lifecycle_status === 'ENROLLED'
+                    ? <Badge value="ENROLLED" />
+                    : r.status === 'ADMITTED' && <button onClick={() => ensureAdmission(r)}>Ensure</button>}
+                </td>
+              </tr>
             ))}
           </tbody>
         </table>

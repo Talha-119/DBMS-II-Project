@@ -44,7 +44,7 @@ router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
 router.get('/dashboard', asyncHandler(async (_req, res) => {
   const settings = await query(
     `SELECT key, value, updated_at FROM app_setting
-     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND', 'ENROLL_DEADLINE')`);
   const s = Object.fromEntries(settings.rows.map((r) => [r.key, r.value]));
   const publishedAt = settings.rows.find((r) => r.key === 'RESULT_READY')?.updated_at || null;
 
@@ -54,6 +54,7 @@ router.get('/dashboard', asyncHandler(async (_req, res) => {
        (SELECT count(*) FROM admission_result)                             AS results,
        (SELECT count(*) FROM admission_result WHERE status = 'ADMITTED')   AS admitted,
        (SELECT count(*) FROM admission_result WHERE status = 'WAITING')    AS waiting,
+       (SELECT count(*) FROM admission_result WHERE lifecycle_status = 'ENROLLED') AS enrolled,
        (SELECT max(decided_at) FROM admission_result)                      AS last_run_at`);
   const c = rows[0];
 
@@ -64,11 +65,13 @@ router.get('/dashboard', asyncHandler(async (_req, res) => {
     results_pending_publish: Number(c.results) > 0 && s.RESULT_READY !== 'TRUE',
     published_at: s.RESULT_READY === 'TRUE' ? publishedAt : null,
     last_run_at: c.last_run_at,
+    enroll_deadline: s.ENROLL_DEADLINE || null,
     counts: {
       applications: Number(c.applications),
       results: Number(c.results),
       admitted: Number(c.admitted),
       waiting: Number(c.waiting),
+      enrolled: Number(c.enrolled),
     },
   });
 }));
@@ -94,6 +97,18 @@ router.post('/lottery',
     const round = req.body.round || 1;
     await query('CALL sp_run_lottery($1::int)', [round]);
     res.json({ ran: true, round, published: true });
+  }));
+
+// Certificate deadline -----------------------------------------------------
+// One deadline for every school. Admissions a school has not confirmed by then
+// are cancelled by the next lottery run (see sp_run_lottery), not at the
+// deadline itself, so a school can still confirm a late student until then.
+router.post('/enrollment-deadline',
+  body('deadline').isISO8601().withMessage('deadline must be a date and time'),
+  validate,
+  asyncHandler(async (req, res) => {
+    await query('CALL sp_set_enrollment_deadline($1::timestamptz)', [req.body.deadline]);
+    res.json({ enroll_deadline: req.body.deadline });
   }));
 
 // Publication ---------------------------------------------------------------

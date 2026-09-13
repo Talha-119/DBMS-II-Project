@@ -83,7 +83,7 @@ SELECT r.application_id, a.bc_no, bc.name AS student_name,
        r.status, COALESCE(r.lifecycle_status, a.lifecycle_status) AS lifecycle_status,
        r.allocated_quota, r.admitted_seat_id,
        sch.eiin, sch.name AS school_name, sch.school_type, se.class_level, se.shift,
-       r.round, r.decided_at
+       r.round, r.decided_at, r.enrolled_at
 FROM admission_result r
 JOIN application a         ON a.application_id = r.application_id
 JOIN birth_certificate bc  ON bc.bc_no = a.bc_no

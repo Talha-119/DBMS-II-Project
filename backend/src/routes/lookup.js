@@ -148,12 +148,13 @@ router.get('/applicant-limits/:bc', asyncHandler(async (req, res) => {
 router.get('/round-status', asyncHandler(async (_req, res) => {
   const { rows } = await query(
     `SELECT key, value FROM app_setting
-     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND', 'ENROLL_DEADLINE')`);
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   res.json({
     round_open: s.ROUND_OPEN === 'TRUE',
     result_ready: s.RESULT_READY === 'TRUE',
     current_round: parseInt(s.CURRENT_ROUND || '0', 10),
+    enroll_deadline: s.ENROLL_DEADLINE || null,
   });
 }));
 

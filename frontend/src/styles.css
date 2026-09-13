@@ -221,9 +221,9 @@ tbody tr:last-child td { border-bottom: none; }
   text-transform: uppercase; letter-spacing: .4px;
 }
 .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
-.badge.ADMITTED { background: var(--ok-bg); color: var(--ok); }
+.badge.ADMITTED, .badge.ENROLLED { background: var(--ok-bg); color: var(--ok); }
 .badge.WAITING { background: var(--warn-bg); color: var(--warn); }
-.badge.NOT_ADMITTED, .badge.CANCELLED { background: var(--danger-bg); color: var(--danger); }
+.badge.NOT_ADMITTED, .badge.CANCELLED, .badge.FORFEITED { background: var(--danger-bg); color: var(--danger); }
 .badge.SUBMITTED { background: var(--brand-light); color: var(--brand-dark); }
 
 /* Admin operations dashboard ------------------------------------------ */

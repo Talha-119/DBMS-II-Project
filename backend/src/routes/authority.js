@@ -69,10 +69,21 @@ router.get('/applicants', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// Lottery admissions at this school. Forfeited ones are left out: the student
+// missed the certificate deadline and the seat has gone back to the pool.
 router.get('/results', asyncHandler(async (req, res) => {
   const { rows } = await query(
-    'SELECT * FROM vw_admission_result WHERE eiin = $1 ORDER BY status, application_id', [req.user.eiin]);
+    `SELECT * FROM vw_admission_result
+     WHERE eiin = $1 AND lifecycle_status <> 'FORFEITED'
+     ORDER BY status, application_id`, [req.user.eiin]);
   res.json(rows);
+}));
+
+// The student handed in their certificates: confirm the lottery admission.
+// sp_confirm_enrollment re-checks in SQL that the seat belongs to this school.
+router.post('/results/:applicationId/enroll', asyncHandler(async (req, res) => {
+  await query('CALL sp_confirm_enrollment($1, $2)', [req.user.eiin, req.params.applicationId]);
+  res.json({ enrolled: true });
 }));
 
 // --- Notification inbox (school-authority side) ---------------------------

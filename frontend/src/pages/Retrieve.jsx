@@ -178,7 +178,7 @@ export default function Retrieve() {
                     <td>{a.application_id}</td>
                     <td>{a.desired_class}</td>
                     <td>{a.thana}, {a.district}</td>
-                    <td><Badge value={a.status} /></td>
+                    <td><Badge value={a.lifecycle_status === 'ENROLLED' || a.lifecycle_status === 'FORFEITED' ? a.lifecycle_status : a.status} /></td>
                     <td>{a.payment_status === 'PAID' ? <span className="badge ADMITTED">PAID</span> : <span className="badge WAITING">PENDING</span>}</td>
                     <td>{new Date(a.submitted_at).toLocaleDateString()}</td>
                     <td className="btn-row">

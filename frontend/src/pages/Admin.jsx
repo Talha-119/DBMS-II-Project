@@ -38,6 +38,7 @@ export default function Admin() {
   const [resultSearch, setResultSearch] = useState('');
   const [auditSearch, setAuditSearch] = useState('');
   const [announce, setAnnounce] = useState({ audience: 'APPLICANT', eiin: '', title: '', body: '' });
+  const [deadlineInput, setDeadlineInput] = useState('');
 
   async function loadAll() {
     setErr('');
@@ -116,9 +117,15 @@ export default function Admin() {
     const rerunWarning = dash?.result_ready
       ? `\n\nThe currently published result will be UNPUBLISHED, because re-running changes it.`
       : '';
+    // Past the certificate deadline the run cancels every admission its school
+    // has not confirmed, so say how many before the admin commits to it.
+    const unconfirmed = (dash?.counts.admitted || 0) - (dash?.counts.enrolled || 0);
+    const forfeitWarning = dash?.enroll_deadline && new Date(dash.enroll_deadline) <= new Date() && unconfirmed > 0
+      ? `\n\nThe certificate deadline has passed: ${unconfirmed} admission(s) not confirmed by their school will be CANCELLED and those seats given to the waiting list.`
+      : '';
     if (!window.confirm(
       `Run the admission lottery (round ${round}) now?\n\n`
-      + `This closes the application window and allocates seats.${rerunWarning}\n\n`
+      + `This closes the application window and allocates seats.${forfeitWarning}${rerunWarning}\n\n`
       + 'Results are NOT published — applicants will not see them until you press "Publish results".'
     )) return;
     try {
@@ -140,6 +147,18 @@ export default function Admin() {
     if (!window.confirm('Unpublish the results?\n\n"Check Result" becomes inaccessible again. Applicants who already saw their result will remember it.')) return;
     try { await api.post('/admin/results/unpublish'); setMsg('Results unpublished — the public result lookup is closed.'); loadAll(); }
     catch (e) { setErr(apiError(e)); }
+  }
+
+  // One certificate deadline for every school. datetime-local gives a local
+  // time with no zone, so it is sent as an ISO instant.
+  async function saveDeadline(e) {
+    e.preventDefault(); setErr(''); setMsg('');
+    try {
+      await api.post('/admin/enrollment-deadline', { deadline: new Date(deadlineInput).toISOString() });
+      setMsg(`Certificate deadline set to ${new Date(deadlineInput).toLocaleString()}.`);
+      setDeadlineInput('');
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   async function decide(id, approve) {
@@ -287,6 +306,39 @@ export default function Admin() {
               <b>{dash.current_round || '—'}</b>
               <span>{dash.last_run_at ? `Last run ${new Date(dash.last_run_at).toLocaleString()}` : 'Rounds run'}</span>
             </div>
+          </div>
+        )}
+
+        {/* Certificate deadline — one for every school. Passing it cancels
+            nothing by itself; the next lottery round does. */}
+        {dash && (
+          <div className="ops-panel" style={{ marginTop: 16 }}>
+            <div className="ops-head">
+              <span className="ops-title">Certificate deadline</span>
+              <StatusLight
+                on={!!dash.enroll_deadline && new Date(dash.enroll_deadline) > new Date()}
+                onLabel="Open"
+                offLabel={dash.enroll_deadline ? 'Passed' : 'Not set'}
+              />
+            </div>
+            <p className="help">
+              {dash.enroll_deadline
+                ? `Admitted students must hand their certificates to the school by ${new Date(dash.enroll_deadline).toLocaleString()}. `
+                  + `${dash.counts.enrolled} of ${dash.counts.admitted} admissions confirmed so far. Running the next lottery round after `
+                  + 'this deadline cancels every unconfirmed admission and gives its seat to the waiting list.'
+                : 'No deadline set. Set one after publishing results. Unconfirmed admissions are only cancelled by a lottery round run after the deadline.'}
+            </p>
+            <form onSubmit={saveDeadline} className="row">
+              {/* Date only; the deadline is the end of that day (11:59 PM local). */}
+              <Field label="Deadline date (until 11:59 PM)">
+                <input
+                  type="date"
+                  value={deadlineInput.slice(0, 10)}
+                  onChange={(e) => setDeadlineInput(e.target.value ? `${e.target.value}T23:59` : '')}
+                />
+              </Field>
+              <div style={{ alignSelf: 'end' }}><button type="submit" disabled={!deadlineInput}>Set deadline</button></div>
+            </form>
           </div>
         )}
       </div>

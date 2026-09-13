@@ -19,66 +19,104 @@
 -- seat capacity to applicants who are still unseated. So calling it again
 -- (round 2, 3…) migrates waiting applicants into seats freed up / left over.
 -- Safe to re-run. Concurrency-safe via a transaction advisory lock.
+--
+-- WAITING LIST: an application's lottery position is drawn once and kept for
+-- every later round, so freed seats go to the top of a stable waiting list.
+--
+-- ENROLLMENT: a lottery admission holds its seat until the school confirms it
+-- (ENROLLED, see procedures/05_enrollment.sql). Once the master admin's
+-- certificate deadline (ENROLL_DEADLINE) has passed, a run first forfeits every
+-- admission still unconfirmed and returns those seats to the pool.
 -- ============================================================================
 
 CREATE OR REPLACE PROCEDURE sp_run_lottery(p_round INT DEFAULT 1)
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_app    RECORD;
-    v_choice RECORD;
-    v_res    RECORD;
-    v_sq     RECORD;
-    v_rows   INT;
-    v_def_q  TEXT;
+    v_app      RECORD;
+    v_choice   RECORD;
+    v_sq       RECORD;
+    v_rows     INT;
+    v_def_q    TEXT;
+    v_deadline TIMESTAMPTZ;
 BEGIN
     -- Only one lottery may run at a time (prevents double allocation).
     PERFORM pg_advisory_xact_lock(42);
 
-    -- 1. Restore seat quota capacity for prior ADMITTED results that did NOT get ENROLLED.
-    -- If a student was selected in a previous lottery but forfeited, was disqualified, or
-    -- didn't get enrolled, their seat becomes vacant again and capacity is returned.
-    FOR v_res IN
-        SELECT r.admitted_seat_id, r.allocated_quota
-        FROM admission_result r
-        JOIN application a ON a.application_id = r.application_id
-        WHERE r.status = 'ADMITTED'
-          AND COALESCE(r.lifecycle_status, a.lifecycle_status) <> 'ENROLLED'
-          AND r.admitted_seat_id IS NOT NULL
-          AND r.allocated_quota IS NOT NULL
-    LOOP
-        UPDATE seat_quota
-        SET capacity = capacity + 1
-        WHERE seat_id = v_res.admitted_seat_id AND quota_code = v_res.allocated_quota;
-    END LOOP;
+    -- 1. Release seats that are no longer held. A DISQUALIFIED applicant loses
+    -- their seat on any run. Once the certificate deadline has passed, every
+    -- admission still ALLOTTED (not confirmed by its school) is FORFEITED too.
+    -- The seat goes back to the quota it came from, so this run can hand it to
+    -- a waiting applicant, and the student is out of this admission: all their
+    -- applications close as NOT_ADMITTED.
+    SELECT value::TIMESTAMPTZ INTO v_deadline FROM app_setting WHERE key = 'ENROLL_DEADLINE';
 
-    -- 2. Clear non-finalized admission results (keep only ENROLLED admissions).
-    DELETE FROM admission_result
-    WHERE status <> 'ADMITTED'
-       OR (status = 'ADMITTED' AND COALESCE(lifecycle_status, 'ALLOTTED') <> 'ENROLLED');
+    DROP TABLE IF EXISTS tmp_release;
+    CREATE TEMP TABLE tmp_release ON COMMIT DROP AS
+    SELECT r.application_id, r.admitted_seat_id, r.allocated_quota, a.bc_no,
+           (CASE WHEN a.lifecycle_status = 'DISQUALIFIED' THEN 'DISQUALIFIED' ELSE 'FORFEITED' END)::admission_lifecycle_status_t AS outcome
+      FROM admission_result r
+      JOIN application a ON a.application_id = r.application_id
+     WHERE r.status = 'ADMITTED'
+       AND r.admitted_seat_id IS NOT NULL
+       AND (a.lifecycle_status = 'DISQUALIFIED'
+            OR (v_deadline IS NOT NULL AND v_deadline <= now() AND r.lifecycle_status = 'ALLOTTED'));
 
-    -- 3. Reset application status to SUBMITTED / WAITLISTED for students eligible for this draw.
-    -- Exclude ENROLLED, DELETED, DISQUALIFIED, and CANCELLED students.
+    UPDATE seat_quota sq
+       SET capacity = sq.capacity + f.n
+      FROM (SELECT admitted_seat_id, allocated_quota, count(*) AS n
+              FROM tmp_release GROUP BY 1, 2) f
+     WHERE sq.seat_id = f.admitted_seat_id AND sq.quota_code = f.allocated_quota;
+
+    UPDATE admission_result r
+       SET status = 'NOT_ADMITTED', lifecycle_status = f.outcome, decided_at = now()
+      FROM tmp_release f
+     WHERE r.application_id = f.application_id;
+
+    UPDATE application a
+       SET status = 'NOT_ADMITTED',
+           lifecycle_status = COALESCE((SELECT f.outcome FROM tmp_release f WHERE f.application_id = a.application_id),
+                                       a.lifecycle_status)
+     WHERE a.bc_no IN (SELECT bc_no FROM tmp_release)
+       AND a.status <> 'DELETED';
+
+    -- The deadline is used up: the students this round admits need a new one.
+    IF v_deadline IS NOT NULL AND v_deadline <= now() THEN
+        DELETE FROM app_setting WHERE key = 'ENROLL_DEADLINE';
+    END IF;
+
+    -- 2. Clear the non-final WAITING results and put everyone not yet seated back
+    -- into the draw. Kept as they are: admissions (ALLOTTED or ENROLLED) and
+    -- released seats. Never re-entered: DELETED and CANCELLED applications,
+    -- NOT_ADMITTED (a student who forfeited or was disqualified) and
+    -- DISQUALIFIED applicants.
+    DELETE FROM admission_result WHERE status = 'WAITING';
+
     UPDATE application
     SET status = 'SUBMITTED',
         lifecycle_status = 'WAITLISTED'
-    WHERE status NOT IN ('DELETED', 'CANCELLED')
+    WHERE status NOT IN ('ADMITTED', 'DELETED', 'CANCELLED', 'NOT_ADMITTED')
       AND lifecycle_status NOT IN ('ENROLLED', 'DISQUALIFIED');
 
-    -- 4. One random draw per applicant for this whole run.
-    DROP TABLE IF EXISTS tmp_lottery_draw;
-    CREATE TEMP TABLE tmp_lottery_draw ON COMMIT DROP AS
-    SELECT application_id, row_number() OVER (ORDER BY random()) AS draw
-    FROM application
-    WHERE status = 'SUBMITTED'
-      AND lifecycle_status NOT IN ('ENROLLED', 'DISQUALIFIED');
+    -- 3. One random position per application, drawn the first time it enters a
+    -- lottery and kept for every later round. Every one of an applicant's
+    -- choices is judged on that same number, and a freed seat goes to whoever
+    -- is highest on a stable waiting list rather than to a fresh roll.
+    -- Applications new to this round rank after everyone already ranked.
+    UPDATE application a
+       SET lottery_rank = d.base + d.draw
+      FROM (SELECT application_id,
+                   row_number() OVER (ORDER BY random()) AS draw,
+                   (SELECT COALESCE(max(lottery_rank), 0) FROM application) AS base
+              FROM application
+             WHERE status = 'SUBMITTED' AND lottery_rank IS NULL) d
+     WHERE a.application_id = d.application_id;
 
-    -- 5. Pass 1: Walk applicants in lottery order and try claimed quotas for their ranked choices.
+    -- 4. Pass 1: Walk applicants in waiting-list order and try claimed quotas for their ranked choices.
     FOR v_app IN
         SELECT a.application_id, a.bc_no
         FROM application a
-        JOIN tmp_lottery_draw t ON t.application_id = a.application_id
         WHERE a.status = 'SUBMITTED'
-        ORDER BY t.draw
+        ORDER BY a.lottery_rank
     LOOP
         -- Skip if this student already won a seat via a different application.
         IF EXISTS (
@@ -113,7 +151,7 @@ BEGIN
         END LOOP;
     END LOOP;
 
-    -- 6. Pass 2: Transfer remaining unfilled specialized quota capacities to default quota pool
+    -- 5. Pass 2: Transfer remaining unfilled specialized quota capacities to default quota pool
     -- so waitlisted applicants can be pulled into seats where quota was not filled.
     SELECT code INTO v_def_q FROM quota_type WHERE is_default ORDER BY priority LIMIT 1;
     IF v_def_q IS NULL THEN
@@ -135,13 +173,12 @@ BEGIN
         WHERE seat_id = v_sq.seat_id AND quota_code = v_sq.quota_code;
     END LOOP;
 
-    -- Process unseated applicants from waitlist for remaining seat capacity under default quota
+    -- Process unseated applicants from the waiting list for remaining seat capacity under default quota
     FOR v_app IN
         SELECT a.application_id, a.bc_no
         FROM application a
-        JOIN tmp_lottery_draw t ON t.application_id = a.application_id
         WHERE a.status = 'SUBMITTED'
-        ORDER BY t.draw
+        ORDER BY a.lottery_rank
     LOOP
         IF EXISTS (
             SELECT 1 FROM admission_result r
@@ -173,7 +210,7 @@ BEGIN
         END LOOP;
     END LOOP;
 
-    -- 7. Anyone still SUBMITTED did not get any seat this round -> WAITING / WAITLISTED.
+    -- 6. Anyone still SUBMITTED did not get any seat this round -> WAITING / WAITLISTED.
     INSERT INTO admission_result (application_id, admitted_seat_id, allocated_quota, status, round, lifecycle_status)
     SELECT a.application_id, NULL, NULL, 'WAITING', p_round, 'WAITLISTED'
     FROM application a
@@ -185,7 +222,7 @@ BEGIN
     WHERE status = 'SUBMITTED'
       AND application_id IN (SELECT application_id FROM admission_result WHERE status = 'WAITING' AND round = p_round);
 
-    -- 8. Save settings & automatically publish results after every lottery run.
+    -- 7. Save settings & automatically publish results after every lottery run.
     INSERT INTO app_setting (key, value) VALUES ('RESULT_READY', 'TRUE')
     ON CONFLICT (key) DO UPDATE SET value = 'TRUE', updated_at = now();
     INSERT INTO app_setting (key, value) VALUES ('ROUND_OPEN', 'FALSE')
@@ -236,4 +273,3 @@ BEGIN
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 END;
 $$;
-
