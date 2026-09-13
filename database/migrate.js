@@ -195,63 +195,6 @@ async function runCheck() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Demo scenarios (database/scenarios/). Test data only — these files are NOT
-// part of `up`, so a normal setup never loads them.
-//
-//   clear -> wipe the applicant side, keep registries/schools/seats/logins
-//   semi  -> clear, then a part-filled session for the auto-fill + limit demos
-//   full  -> clear, then an oversubscribed session ready for a fresh lottery
-//
-// `semi` and `full` each run `clear` first, so they are repeatable from any
-// state. The helpers come first everywhere: they define the demo submit
-// procedure and the state report every scenario prints.
-//
-// Each file is sent as a single query, so PostgreSQL runs it as one implicit
-// transaction — a scenario either loads completely or leaves the database
-// exactly as it was.
-// ---------------------------------------------------------------------------
-// The array order is the run order, not the filename order: `full` needs the
-// extra demo identities loaded before it can file applications with them.
-const SCENARIOS = {
-  clear: ['00_helpers.sql', '01_clear.sql'],
-  semi: ['00_helpers.sql', '01_clear.sql', '02_semi.sql'],
-  full: ['00_helpers.sql', '01_clear.sql', '04_demo_registry.sql', '03_full.sql'],
-};
-
-async function runScenario(name) {
-  const key = (name || '').toLowerCase();
-  const files = SCENARIOS[key];
-  if (!files) {
-    console.error('Unknown scenario: ' + (name || '(none)') +
-      ' (use: ' + Object.keys(SCENARIOS).join(' | ') + ')');
-    process.exitCode = 1;
-    return;
-  }
-  const dir = path.join(__dirname, 'scenarios');
-  const c = adminClient(cfg.appDb);
-  await c.connect();
-  // The scenarios report what they built through RAISE NOTICE.
-  c.on('notice', (m) => console.log('  ' + (m.message || '').trimEnd()));
-  try {
-    console.log('Scenario "' + key + '" on database ' + cfg.appDb + ' ...\n');
-    for (const f of files) {
-      const file = path.join(dir, f);
-      if (!fs.existsSync(file)) throw new Error('missing scenario file: ' + f);
-      console.log('- ' + f);
-      const res = await c.query(fs.readFileSync(file, 'utf8'));
-      // A scenario's last statement is its state report.
-      const last = Array.isArray(res) ? res[res.length - 1] : res;
-      if (last && last.rows && last.rows.length && last.rows[0].metric) {
-        console.table(last.rows.map((r) => ({ metric: r.metric, value: r.value })));
-      }
-    }
-    console.log('\nScenario "' + key + '" loaded.');
-  } finally {
-    await c.end();
-  }
-}
-
 (async () => {
   const cmd = (process.argv[2] || 'up').toLowerCase();
   try {
@@ -259,9 +202,8 @@ async function runScenario(name) {
     else if (cmd === 'reset') await runReset();
     else if (cmd === 'test') await runTest();
     else if (cmd === 'check') await runCheck();
-    else if (cmd === 'scenario') await runScenario(process.argv[3]);
     else {
-      console.error('Unknown command: ' + cmd + ' (use: up | reset | test | check | scenario <name>)');
+      console.error('Unknown command: ' + cmd + ' (use: up | reset | test | check)');
       process.exitCode = 1;
     }
   } catch (e) {

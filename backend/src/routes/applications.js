@@ -167,6 +167,31 @@ async function copyForViewer(req, copy) {
   return (await resultsPublished()) ? copy : maskOutcome(copy);
 }
 
+// --- Notification inbox (applicant side) --------------------------------
+// Populated by DB triggers on submit, payment, deletion decisions and result
+// publication (see database/triggers/03_notifications.sql). Scoped to the
+// bc_no proven by the retrieve flow, so one inbox covers every application
+// filed under that birth certificate — same identity the rest of this file
+// already keys everything on.
+// Registered ahead of GET /:id: Express matches routes in declaration order,
+// and "/notifications" would otherwise be swallowed by "/:id" (id='notifications').
+function requireApplicantScope(req, res) {
+  if (!req.user || req.user.scope !== 'applicant') {
+    res.status(403).json({ error: 'Forbidden' });
+    return false;
+  }
+  return true;
+}
+
+router.get('/notifications', applicantAccess, asyncHandler(async (req, res) => {
+  if (!requireApplicantScope(req, res)) return;
+  const { rows } = await query(
+    `SELECT notification_id, application_id, type, title, body, is_read, created_at
+     FROM notification WHERE audience = 'APPLICANT' AND bc_no = $1
+     ORDER BY created_at DESC LIMIT 50`, [req.user.bc_no]);
+  res.json(rows);
+}));
+
 // --- View a single applicant copy (JSON) ---
 router.get('/:id', applicantAccess, asyncHandler(async (req, res) => {
   const copy = await fetchCopy(req.params.id);
@@ -217,6 +242,24 @@ router.post('/:id/delete-otp', asyncHandler(async (req, res) => {
   const copy = await fetchCopy(req.params.id);
   if (!copy) return res.status(404).json({ error: 'Application not found' });
   res.json(await issueOtp('DELETE', copy.mobile));
+}));
+
+// --- Notification read/unread actions (applicant side) -------------------
+router.post('/notifications/:id/read', applicantAccess, asyncHandler(async (req, res) => {
+  if (!requireApplicantScope(req, res)) return;
+  await query(
+    `UPDATE notification SET is_read = TRUE
+     WHERE notification_id = $1 AND audience = 'APPLICANT' AND bc_no = $2`,
+    [req.params.id, req.user.bc_no]);
+  res.json({ read: true });
+}));
+
+router.post('/notifications/read-all', applicantAccess, asyncHandler(async (req, res) => {
+  if (!requireApplicantScope(req, res)) return;
+  await query(
+    `UPDATE notification SET is_read = TRUE WHERE audience = 'APPLICANT' AND bc_no = $1`,
+    [req.user.bc_no]);
+  res.json({ read: true });
 }));
 
 module.exports = router;
