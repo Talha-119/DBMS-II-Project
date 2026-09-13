@@ -394,6 +394,54 @@ export default function Admin() {
           )}
       </div>
 
+      {/* Restored: this panel was dropped by a merge, leaving sendAnnouncement
+          and its state wired to nothing, so /admin/notifications/broadcast and
+          sp_broadcast_notification were unreachable from the UI. */}
+      <div className="card">
+        <h3>Send announcement</h3>
+        <p className="help">
+          Pushes an announcement straight into the inbox: applicants see it on the Download / Delete
+          Application page, school authorities see it under the megaphone in the header.
+        </p>
+        <form onSubmit={sendAnnouncement}>
+          <div className="row">
+            <Field label="Audience">
+              <select
+                value={announce.audience}
+                onChange={(e) => setAnnounce({ ...announce, audience: e.target.value, eiin: '' })}
+              >
+                <option value="APPLICANT">All applicants</option>
+                <option value="SCHOOL_AUTHORITY">School authority</option>
+              </select>
+            </Field>
+            {announce.audience === 'SCHOOL_AUTHORITY' && (
+              <Field label="School EIIN (blank = every school)">
+                <input
+                  value={announce.eiin}
+                  onChange={(e) => setAnnounce({ ...announce, eiin: e.target.value })}
+                  placeholder="e.g. 108103"
+                />
+              </Field>
+            )}
+            <Field label="Title">
+              <input
+                value={announce.title}
+                onChange={(e) => setAnnounce({ ...announce, title: e.target.value })}
+                placeholder="e.g. Portal maintenance tonight"
+              />
+            </Field>
+          </div>
+          <Field label="Body (optional)">
+            <textarea
+              rows={3}
+              value={announce.body}
+              onChange={(e) => setAnnounce({ ...announce, body: e.target.value })}
+            />
+          </Field>
+          <button type="submit" disabled={!announce.title.trim()}>Send announcement</button>
+        </form>
+      </div>
+
       <div className="card">
         <h3>Pending deletion requests ({delReqs.length})</h3>
         {delReqs.length === 0 && <p className="muted">None.</p>}

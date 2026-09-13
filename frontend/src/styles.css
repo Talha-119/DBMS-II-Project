@@ -364,14 +364,19 @@ input.valid { border-color: var(--ok); }
 .watermark { text-align: center; color: var(--muted); font-size: 12px; margin-top: 14px; }
 
 /* Notifications ------------------------------------------------------------ */
-/* Header bell + dropdown (NotificationBell.jsx, staff only) and the reusable
+/* Header megaphone + dropdown (AnnouncementBell.jsx, staff only) and the reusable
    .notif-list/.notif-title/... parts also used inline on the applicant
    Retrieve page (.notif-inline wraps them there instead of .notif-panel). */
 .notif { position: relative; margin-left: 4px; }
+/* Holds an inline SVG megaphone, not a text glyph, so the button centres the
+   icon with flex instead of relying on font metrics. `color` is what the SVG
+   inherits through currentColor. */
 .notif-bell {
-  background: transparent; box-shadow: none; padding: 7px 10px; font-size: 17px;
+  background: transparent; box-shadow: none; padding: 7px; color: #fff;
   border-radius: 50%; position: relative; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
 }
+.announce-icon { display: block; }
 .notif-bell:hover { background: rgba(255,255,255,.14); }
 .notif-count {
   position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 3px;

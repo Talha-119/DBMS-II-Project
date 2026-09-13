@@ -117,7 +117,7 @@ export default function Retrieve() {
           {notifs.length > 0 && (
             <div className="card notif-inline">
               <div className="notif-inline-head">
-                <h3>Notifications</h3>
+                <h3>Announcements</h3>
                 {notifs.some((n) => !n.is_read) && (
                   <button className="btn-secondary" onClick={markAllNotifsRead}>Mark all read</button>
                 )}
