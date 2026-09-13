@@ -254,13 +254,32 @@ BEGIN
             RAISE EXCEPTION 'Each choice must claim at least one quota' USING ERRCODE = '23514';
         END IF;
 
-        -- A student may not reuse the same seat across their applications.
+        -- A student may not choose the same SCHOOL twice — not across their
+        -- applications, and not twice within this one.
+        --
+        -- This was originally written at seat level (ac.seat_id = v_seat_id),
+        -- which was too narrow: a school may offer more than one seat row for the
+        -- same class (one per shift), so the same school could be re-picked
+        -- through a different shift and pass the check. Stating the rule at
+        -- school level closes that and makes the rule the obvious one — one
+        -- student, one shot per school.
+        --
+        -- Choices inserted earlier in this same transaction are visible here, so
+        -- the same query also rejects a duplicate school inside the choice list
+        -- being submitted right now.
+        --
+        -- DELETED applications are excluded: withdrawing an application releases
+        -- the schools it held.
         IF EXISTS (
             SELECT 1 FROM application_choice ac
             JOIN application a ON a.application_id = ac.application_id
-            WHERE a.bc_no = p_bc_no AND ac.seat_id = v_seat_id
+            JOIN seat se       ON se.seat_id = ac.seat_id
+            WHERE a.bc_no = p_bc_no
+              AND a.status <> 'DELETED'
+              AND se.eiin = v_seat.eiin
         ) THEN
-            RAISE EXCEPTION 'Seat % was already used in a previous application of this student', v_seat_id
+            RAISE EXCEPTION 'You have already applied to this school (%) — one application per school is allowed',
+                (SELECT name FROM school WHERE eiin = v_seat.eiin)
                 USING ERRCODE = '23505';
         END IF;
 
@@ -294,6 +313,68 @@ BEGIN
 END;
 $$;
 
+-- Decide a deletion request: the master admin approves or rejects it.
+--
+-- Approving marks the application DELETED rather than deleting the row. The
+-- application stays readable (the applicant can still see that it was deleted,
+-- and deletion_request/audit_log keep their FK targets), but it is out of the
+-- game everywhere that matters:
+--   * the lottery skips it (procedures/03_lottery.sql);
+--   * it stops counting toward the 3-application cap and the one-per-area rule
+--     (triggers/02_rules.sql), so the applicant gets that slot and area back;
+--   * its schools are released (sp_submit_application's school check).
+--
+-- If the application had already won a seat, that seat is handed back to the
+-- pool: the capacity the lottery decremented is restored and the result row is
+-- dropped, so a later round can allocate it to someone else. Without this, a
+-- deleted application would keep sitting on a seat nobody can have.
+CREATE OR REPLACE PROCEDURE sp_approve_deletion(
+    p_request_id BIGINT,
+    p_decided_by TEXT,
+    p_approve    BOOLEAN
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_req    deletion_request%ROWTYPE;
+    v_result admission_result%ROWTYPE;
+BEGIN
+    SELECT * INTO v_req FROM deletion_request WHERE request_id = p_request_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Deletion request % not found', p_request_id USING ERRCODE = '23503';
+    END IF;
+    IF v_req.status <> 'PENDING' THEN
+        RAISE EXCEPTION 'Deletion request % was already decided (%)', p_request_id, v_req.status
+            USING ERRCODE = '23505';
+    END IF;
+
+    UPDATE deletion_request
+       SET status     = CASE WHEN p_approve THEN 'APPROVED' ELSE 'REJECTED' END::deletion_status_t,
+           decided_at = now(),
+           decided_by = p_decided_by
+     WHERE request_id = p_request_id;
+
+    IF NOT p_approve THEN
+        RETURN;      -- rejected: the application is untouched
+    END IF;
+
+    -- Give back a seat this application had already been allocated.
+    SELECT * INTO v_result FROM admission_result WHERE application_id = v_req.application_id;
+    IF FOUND THEN
+        IF v_result.status = 'ADMITTED'
+           AND v_result.admitted_seat_id IS NOT NULL
+           AND v_result.allocated_quota IS NOT NULL THEN
+            UPDATE seat_quota
+               SET capacity = capacity + 1
+             WHERE seat_id = v_result.admitted_seat_id
+               AND quota_code = v_result.allocated_quota;
+        END IF;
+        DELETE FROM admission_result WHERE application_id = v_req.application_id;
+    END IF;
+
+    UPDATE application SET status = 'DELETED' WHERE application_id = v_req.application_id;
+END;
+$$;
+
 -- Pay the application fee (mock gateway). Idempotency: paying twice raises.
 CREATE OR REPLACE PROCEDURE sp_pay_fee(
     p_application_id TEXT,
@@ -314,8 +395,6 @@ BEGIN
 END;
 $$;
 
--- NOTE: approving/rejecting a deletion request (sp_approve_deletion) and running
--- the seat-allocation lottery belong to the separate school-authority/admin
--- system and are intentionally NOT part of this applicant project. The applicant
--- can only *raise* a deletion request (sp_request_deletion, above); the admin
--- system decides it.
+-- NOTE: the applicant can only *raise* a deletion request (sp_request_deletion);
+-- the master admin decides it (sp_approve_deletion, above) from the admin portal.
+-- The seat-allocation lottery lives in procedures/03_lottery.sql.

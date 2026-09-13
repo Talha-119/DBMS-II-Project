@@ -43,6 +43,125 @@ CREATE OR REPLACE TRIGGER trg_choice_max_five
     BEFORE INSERT ON application_choice
     FOR EACH ROW EXECUTE FUNCTION trg_fn_choice_max_five();
 
+-- ============================================================================
+-- Application rate limits. Both are row-count rules over a student's OTHER
+-- applications, which a CHECK constraint cannot express, so they are triggers —
+-- same reason as trg_choice_max_five above.
+--
+-- DELETED applications are excluded from both counts. That is the whole point of
+-- the deletion cycle: an applicant who withdraws an application gets the slot
+-- (and that area) back, exactly as if they had never filed it.
+--
+-- sp_submit_application inserts the application row, so these fire on the submit
+-- path automatically; they also hold for direct SQL, which is why they are
+-- triggers rather than checks inside the procedure.
+-- ============================================================================
+
+-- One application per area, per student. Without this, a student could file
+-- application after application into the same postcode — each one drawing its own
+-- lottery number for the same set of schools, which is exactly the spam this
+-- forbids. Choices are already constrained to the applying area
+-- (sp_submit_application step 7), so "one application per area" also means a
+-- school can never be reached twice across two applications.
+CREATE OR REPLACE FUNCTION trg_fn_application_postcode_once()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM application
+        WHERE bc_no = NEW.bc_no
+          AND applying_postcode = NEW.applying_postcode
+          AND status <> 'DELETED'
+          AND application_id IS DISTINCT FROM NEW.application_id
+    ) THEN
+        RAISE EXCEPTION
+            'You already have an application in area %. One application per area is allowed — delete the existing one first if you want to re-apply there',
+            NEW.applying_postcode
+            USING ERRCODE = '23505';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_application_postcode_once
+    BEFORE INSERT ON application
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_application_postcode_once();
+
+-- Cap on live applications per student, default 3. Each application is an
+-- independent entry in the draw (sp_run_lottery gives one random number per
+-- application), so an uncapped student could simply buy more lottery tickets
+-- than everyone else.
+--
+-- The cap is read from app_setting.MAX_APPLICATIONS rather than hardcoded, so
+-- this trigger, /api/lookup/applicant-limits and the apply form all agree on one
+-- number and an admin can retune it.
+CREATE OR REPLACE FUNCTION trg_fn_application_max_three()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_live INT;
+    v_max  INT;
+BEGIN
+    v_max := COALESCE(
+        (SELECT value::INT FROM app_setting WHERE key = 'MAX_APPLICATIONS'), 3);
+
+    SELECT count(*) INTO v_live
+    FROM application
+    WHERE bc_no = NEW.bc_no
+      AND status <> 'DELETED'
+      AND application_id IS DISTINCT FROM NEW.application_id;
+
+    IF v_live >= v_max THEN
+        RAISE EXCEPTION
+            'A student may hold at most % applications (you already have %). Delete one before filing another',
+            v_max, v_live
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_application_max_three
+    BEFORE INSERT ON application
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_application_max_three();
+
+-- One school per student, across every live application. sp_submit_application
+-- checks this on the submit path with a school-named message; this is the
+-- backstop for direct SQL, and it is stated at school (eiin) level rather than
+-- seat level on purpose: a school can offer several seat rows for one class (one
+-- per shift), so a seat-level rule let the same school be re-picked through a
+-- different shift.
+CREATE OR REPLACE FUNCTION trg_fn_choice_school_once()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_bc   VARCHAR(20);
+    v_eiin VARCHAR(10);
+BEGIN
+    SELECT bc_no INTO v_bc FROM application WHERE application_id = NEW.application_id;
+    SELECT eiin  INTO v_eiin FROM seat      WHERE seat_id = NEW.seat_id;
+
+    IF EXISTS (
+        SELECT 1
+        FROM application_choice ac
+        JOIN application a ON a.application_id = ac.application_id
+        JOIN seat se       ON se.seat_id = ac.seat_id
+        WHERE a.bc_no = v_bc
+          AND a.status <> 'DELETED'
+          AND se.eiin = v_eiin
+          AND ac.choice_id IS DISTINCT FROM NEW.choice_id
+    ) THEN
+        RAISE EXCEPTION 'School % has already been chosen by student %', v_eiin, v_bc
+            USING ERRCODE = '23505';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_choice_school_once
+    BEFORE INSERT ON application_choice
+    FOR EACH ROW EXECUTE FUNCTION trg_fn_choice_school_once();
+
 -- A student profile is written once, by that student's first application, and is
 -- immutable afterwards. sp_submit_application already refuses to change it on the
 -- submit path; this trigger is the backstop, so the rule holds for direct SQL too

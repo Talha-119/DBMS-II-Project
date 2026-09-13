@@ -27,3 +27,14 @@ Thumbs.db
 /README.md
 /KNOWN_ISSUES.md
 /PUSH_SEQUENCE.md
+
+# local Claude context — survives account/session changes on this machine,
+# never shared with the team. HOW_TO_RUN.md in particular carries this
+# machine's local Postgres superuser password — must never be staged.
+/CLAUDE.md
+/TODO.md
+/HOW_TO_RUN.md
+/GIT_WORKFLOW.md
+
+
+database/scenarios/
