@@ -45,48 +45,23 @@ END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- sp_approve_deletion — decide a pending deletion request.
+-- sp_approve_deletion lives in procedures/01_application.sql, NOT here.
 --
--- routes/admin.js already calls this ("CALL sp_approve_deletion($1::bigint, $2,
--- $3::boolean)") and Admin.jsx already has working Approve/Reject buttons wired
--- to it, but the procedure itself was never written (01_application.sql only
--- notes that approval "belongs to the separate school-authority/admin system"
--- and stops there) — so every decision on a deletion request currently fails
--- with "procedure sp_approve_deletion does not exist". Added here because the
--- new DELETION_DECIDED applicant notification (triggers/03_notifications.sql)
--- has nothing to fire on otherwise; sp_request_deletion right above is the
--- other half of the same workflow.
+-- A second copy used to sit at this spot. It was written in good faith: on the
+-- branch it was authored from, 01_application.sql genuinely had no such
+-- procedure (a merge had dropped it), so admin.js was calling something that
+-- did not exist. Both copies then loaded, and because this file sorts after
+-- 01_application.sql, this one silently overwrote the other.
+--
+-- The two disagreed on what approval means, and it mattered:
+--   * this copy ran DELETE FROM application, which cascaded the deletion_request
+--     row away with it — the approval destroyed its own audit record — and
+--     never returned the seat the lottery had already allocated, so an admitted
+--     application that was later deleted permanently burned a seat;
+--   * it also left application_status_t's DELETED value unused, which every
+--     rate-limit rule, the lottery and integrity_checks.sql all test against.
+--
+-- The canonical version soft-deletes (status = 'DELETED'), restores the seat
+-- capacity and drops the result row, keeping the application and its request
+-- readable afterwards.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE sp_approve_deletion(
-    p_request_id BIGINT,
-    p_decided_by TEXT,
-    p_approve    BOOLEAN
-)
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_status deletion_status_t;
-    v_app_id TEXT;
-BEGIN
-    SELECT status, application_id INTO v_status, v_app_id
-    FROM deletion_request WHERE request_id = p_request_id;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Deletion request % not found', p_request_id USING ERRCODE = 'P0002';
-    END IF;
-    IF v_status <> 'PENDING' THEN
-        RAISE EXCEPTION 'Deletion request % has already been decided (%)', p_request_id, v_status
-            USING ERRCODE = '23514';
-    END IF;
-
-    -- The UPDATE fires trg_notify_deletion_decided (AFTER UPDATE), which reads
-    -- the applicant's bc_no via v_app_id — so it must happen BEFORE the
-    -- application row (and the bc_no lookup it depends on) can disappear below.
-    UPDATE deletion_request
-       SET status = (CASE WHEN p_approve THEN 'APPROVED' ELSE 'REJECTED' END)::deletion_status_t,
-           decided_at = now(), decided_by = p_decided_by
-     WHERE request_id = p_request_id;
-
-    IF p_approve THEN
-        DELETE FROM application WHERE application_id = v_app_id;
-    END IF;
-END;
-$$;

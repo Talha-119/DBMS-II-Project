@@ -168,8 +168,8 @@ async function copyForViewer(req, copy) {
 }
 
 // --- Notification inbox (applicant side) --------------------------------
-// Populated by DB triggers on submit, payment, deletion decisions and result
-// publication (see database/triggers/03_notifications.sql). Scoped to the
+// Populated by DB triggers on submit, payment, and result publication (see
+// database/triggers/03_notifications.sql). Scoped to the
 // bc_no proven by the retrieve flow, so one inbox covers every application
 // filed under that birth certificate — same identity the rest of this file
 // already keys everything on.
@@ -186,7 +186,7 @@ function requireApplicantScope(req, res) {
 router.get('/notifications', applicantAccess, asyncHandler(async (req, res) => {
   if (!requireApplicantScope(req, res)) return;
   const { rows } = await query(
-    `SELECT notification_id, application_id, type, title, body, is_read, created_at
+    `SELECT notification_id, audience, application_id, type, title, body, is_read, created_at
      FROM notification WHERE audience = 'APPLICANT' AND bc_no = $1
      ORDER BY created_at DESC LIMIT 50`, [req.user.bc_no]);
   res.json(rows);

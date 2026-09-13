@@ -94,8 +94,12 @@ CREATE OR REPLACE VIEW vw_school_dashboard AS
 SELECT sch.eiin, sch.name, sch.postcode, sch.school_type,
        COUNT(DISTINCT se.seat_id) AS seat_rows,
        COALESCE(SUM(sq.capacity), 0)::INT AS seats_remaining,
+       -- Choices belonging to DELETED applications are not demand for this
+       -- school any more, so they are left out of the count.
        (SELECT COUNT(*) FROM application_choice ac
-          JOIN seat s2 ON s2.seat_id = ac.seat_id WHERE s2.eiin = sch.eiin) AS total_choices,
+          JOIN seat s2 ON s2.seat_id = ac.seat_id
+          JOIN application a2 ON a2.application_id = ac.application_id
+         WHERE s2.eiin = sch.eiin AND a2.status <> 'DELETED') AS total_choices,
        (SELECT COUNT(*) FROM admission_result r
           JOIN seat s3 ON s3.seat_id = r.admitted_seat_id
           WHERE s3.eiin = sch.eiin AND r.status = 'ADMITTED') AS admitted_count

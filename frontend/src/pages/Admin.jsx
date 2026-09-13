@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+import DivisionAnalytics from '../components/admin/DivisionAnalytics.jsx';
+import LotteryResultsViewer from '../components/admin/LotteryResultsViewer.jsx';
 
-// Simple substring filter: keeps a row if `q` appears (case-insensitive) in
-// any of the given fields. Empty query keeps everything.
+// Case-insensitive "does this row contain the typed text in any of these
+// fields" — backs the search box over each long admin table.
 function matchesQuery(row, fields, q) {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
@@ -20,6 +22,7 @@ export default function Admin() {
   const nav = useNavigate();
   const [schools, setSchools] = useState([]);
   const [dash, setDash] = useState(null);
+  const [settings, setSettings] = useState([]);
   const [delReqs, setDelReqs] = useState([]);
   const [results, setResults] = useState([]);
   const [audit, setAudit] = useState([]);
@@ -38,13 +41,14 @@ export default function Admin() {
 
   async function loadAll() {
     setErr('');
-    // Each panel (dashboard, schools, results, ...) is loaded independently:
+    // Each panel (schools, lottery/settings, results, ...) is loaded independently:
     // one failing endpoint (e.g. quota-types) must not blank out the others, since
     // create/delete school, view schools, run lottery and see results are the
     // core master-admin features and must keep working even if a side panel errors.
     const specs = [
       ['/admin/dashboard', setDash],
       ['/admin/schools', setSchools],
+      ['/admin/settings', setSettings],
       ['/admin/deletion-requests', setDelReqs],
       ['/admin/results', setResults],
       ['/admin/audit', setAudit],
@@ -102,20 +106,21 @@ export default function Admin() {
     } catch (e) { setErr(apiError(e)); }
   }
 
-  // Two separate decisions, two separate buttons. Running the draw allocates
-  // seats and closes the window; nobody outside this page can see the outcome
-  // until "Publish results" is pressed.
+  // The draw and its publication are two separate decisions, and the procedure
+  // enforces that: sp_run_lottery writes the allocation but leaves
+  // RESULT_READY false, so nothing reaches applicants until "Publish results"
+  // is pressed. The confirmation says so, and says what re-running costs.
   async function runLottery() {
     setErr(''); setMsg('');
     const round = (dash?.current_round || 0) + 1;
-    const warning = dash?.result_ready
+    const rerunWarning = dash?.result_ready
       ? `\n\nThe currently published result will be UNPUBLISHED, because re-running changes it.`
       : '';
     if (!window.confirm(
       `Run the admission lottery (round ${round}) now?\n\n`
-      + 'This closes the application window and allocates seats. '
+      + `This closes the application window and allocates seats.${rerunWarning}\n\n`
       + 'Results are NOT published — applicants will not see them until you press "Publish results".'
-      + warning)) return;
+    )) return;
     try {
       await api.post('/admin/lottery', { round });
       setMsg(`Lottery round ${round} completed. Results are saved but NOT published — review them below, then press "Publish results".`);
@@ -143,6 +148,11 @@ export default function Admin() {
     catch (e) { setErr(apiError(e)); }
   }
 
+  // (The old toggleRound lived here. It wrote ROUND_OPEN straight through
+  // /admin/settings and labelled itself with the state rather than the action
+  // it performs. setRoundOpen below replaces it: it goes through
+  // sp_set_round_open, confirms first, and pairs with the status chip.)
+
   // Manual counterpart to the automatic notifications (submit, payment, results,
   // ...): pushes a one-off announcement straight into an inbox. See
   // sp_broadcast_notification in database/procedures/04_notifications.sql.
@@ -159,15 +169,15 @@ export default function Admin() {
         announce.audience === 'APPLICANT'
           ? 'Announcement sent to every applicant.'
           : announce.eiin
-            ? `Announcement sent to school ${announce.eiin}.`
-            : 'Announcement sent to every school authority.'
+          ? `Announcement sent to school ${announce.eiin}.`
+          : 'Announcement sent to every school authority.'
       );
       setAnnounce({ audience: announce.audience, eiin: '', title: '', body: '' });
     } catch (e) { setErr(apiError(e)); }
   }
 
   // The button always states the action it performs ("Close applications"),
-  // never the state it is in — the chip beside it carries the state.
+  // never the state it is in – the chip beside it carries the state.
   async function setRoundOpen(open) {
     setErr(''); setMsg('');
     if (!window.confirm(open
@@ -187,6 +197,8 @@ export default function Admin() {
 
   function signOut() { logout(); nav('/login'); }
 
+  // These three tables grow to hundreds of rows on real data, so each gets a
+  // filter box rather than making the admin scroll.
   const filteredSchools = useMemo(
     () => schools.filter((s) => matchesQuery(s, ['eiin', 'name', 'postcode'], schoolSearch)),
     [schools, schoolSearch],
@@ -299,7 +311,7 @@ export default function Admin() {
           <thead><tr><th>EIIN</th><th>Name</th><th>Postcode</th><th>Seats left</th><th>Admitted</th><th></th></tr></thead>
           <tbody>
             {filteredSchools.length === 0 && (
-              <tr><td colSpan={6} className="muted">No schools match "{schoolSearch}".</td></tr>
+              <tr><td colSpan={6} className="muted">No schools match “{schoolSearch}”.</td></tr>
             )}
             {filteredSchools.map((s) => (
               <tr key={s.eiin}><td>{s.eiin}</td><td>{s.name}</td><td>{s.postcode}</td><td>{s.seats_remaining}</td><td>{s.admitted_count}</td>
@@ -341,10 +353,9 @@ export default function Admin() {
       <div className="card">
         <h3>Class age eligibility — national baseline (read-only)</h3>
         <p className="help">
-          The nationally accepted date-of-birth window for each class, and the outer bound every
-          school must stay inside. Admission criteria are set by each school, so this is not editable
-          here — a school authority narrows its own window from its portal. Age limits are shown at
-          1 January of the admission year.
+          The nationally accepted date-of-birth window for each class. These limits are set by the
+          government, so they cannot be edited here or from a school authority's portal. Age limits
+          are shown at 1 January of the admission year.
         </p>
         <table>
           <thead><tr><th>Class</th><th>Accepted from</th><th>Accepted to</th><th>Age limit</th></tr></thead>
@@ -382,11 +393,14 @@ export default function Admin() {
           )}
       </div>
 
+      {/* Restored: this panel was dropped by a merge, leaving sendAnnouncement
+          and its state wired to nothing, so /admin/notifications/broadcast and
+          sp_broadcast_notification were unreachable from the UI. */}
       <div className="card">
         <h3>Send announcement</h3>
         <p className="help">
-          Pushes a notification straight into the inbox: applicants see it on the Download / Delete
-          Application page, school authorities see it under the bell icon in the header.
+          Pushes an announcement straight into the inbox: applicants see it on the Download / Delete
+          Application page, school authorities see it under the megaphone in the header.
         </p>
         <form onSubmit={sendAnnouncement}>
           <div className="row">
@@ -416,7 +430,7 @@ export default function Admin() {
               />
             </Field>
           </div>
-          <Field label="Message (optional)">
+          <Field label="Body (optional)">
             <textarea
               rows={3}
               value={announce.body}
@@ -450,10 +464,6 @@ export default function Admin() {
 
       <div className="card">
         <h3>Results ({results.length})</h3>
-        {results.length > 0 && (dash?.result_ready
-          ? <p className="help">Published — applicants can look these up from the landing page.</p>
-          : <Alert kind="warn">Draft — visible to you only. Applicants cannot look these up until you press <b>Publish results</b>.</Alert>
-        )}
         <Field label="Search results">
           <input
             value={resultSearch}
@@ -465,7 +475,7 @@ export default function Admin() {
           <thead><tr><th>Applicant</th><th>Student</th><th>Status</th><th>Quota</th><th>School</th><th>Class</th></tr></thead>
           <tbody>
             {filteredResults.length === 0 && (
-              <tr><td colSpan={6} className="muted">No results match "{resultSearch}".</td></tr>
+              <tr><td colSpan={6} className="muted">No results match “{resultSearch}”.</td></tr>
             )}
             {filteredResults.map((r) => (
               <tr key={r.application_id}><td>{r.application_id}</td><td>{r.student_name}</td><td><Badge value={r.status} /></td><td>{r.allocated_quota || '—'}</td><td>{r.school_name || '—'}</td><td>{r.class_level || '—'}</td></tr>
@@ -487,13 +497,21 @@ export default function Admin() {
           <thead><tr><th>#</th><th>Table</th><th>Action</th><th>At</th></tr></thead>
           <tbody>
             {filteredAudit.length === 0 && (
-              <tr><td colSpan={4} className="muted">No audit entries match "{auditSearch}".</td></tr>
+              <tr><td colSpan={4} className="muted">No entries match “{auditSearch}”.</td></tr>
             )}
             {filteredAudit.map((a) => (
               <tr key={a.log_id}><td>{a.log_id}</td><td>{a.table_name}</td><td>{a.action}</td><td>{new Date(a.at).toLocaleString()}</td></tr>
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="card">
+        <DivisionAnalytics />
+      </div>
+
+      <div className="card">
+        <LotteryResultsViewer />
       </div>
     </>
   );

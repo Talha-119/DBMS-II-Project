@@ -78,36 +78,7 @@ CREATE OR REPLACE TRIGGER trg_notify_deletion_requested
     AFTER INSERT ON deletion_request
     FOR EACH ROW EXECUTE FUNCTION trg_fn_notify_deletion_requested();
 
--- 4. Applicant: their deletion request was decided. -------------------------
--- Fires BEFORE sp_approve_deletion's subsequent DELETE FROM application (see
--- procedures/04_notifications.sql), so the application row — and the bc_no
--- looked up from it — is still there when this reads it.
-CREATE OR REPLACE FUNCTION trg_fn_notify_deletion_decided()
-RETURNS TRIGGER
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_bc TEXT;
-BEGIN
-    IF OLD.status = 'PENDING' AND NEW.status <> 'PENDING' THEN
-        SELECT bc_no INTO v_bc FROM application WHERE application_id = NEW.application_id;
-        IF v_bc IS NOT NULL THEN
-            PERFORM fn_create_notification(
-                'APPLICANT', v_bc, NULL, NEW.application_id,
-                'DELETION_DECIDED',
-                CASE WHEN NEW.status = 'APPROVED' THEN 'Deletion request approved' ELSE 'Deletion request rejected' END,
-                'Your request to delete application ' || NEW.application_id || ' was ' || lower(NEW.status::TEXT) || '.'
-            );
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE OR REPLACE TRIGGER trg_notify_deletion_decided
-    AFTER UPDATE ON deletion_request
-    FOR EACH ROW EXECUTE FUNCTION trg_fn_notify_deletion_decided();
-
--- 5. School authority: a new applicant listed their school. -----------------
+-- 4. School authority: a new applicant listed their school. -----------------
 CREATE OR REPLACE FUNCTION trg_fn_notify_new_choice()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
@@ -134,7 +105,7 @@ CREATE OR REPLACE TRIGGER trg_notify_new_choice
     AFTER INSERT ON application_choice
     FOR EACH ROW EXECUTE FUNCTION trg_fn_notify_new_choice();
 
--- 6. School authority: the lottery filled one of their seats. ---------------
+-- 5. School authority: the lottery filled one of their seats. ---------------
 CREATE OR REPLACE FUNCTION trg_fn_notify_admitted()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
@@ -165,7 +136,7 @@ CREATE OR REPLACE TRIGGER trg_notify_admitted
     AFTER INSERT ON admission_result
     FOR EACH ROW EXECUTE FUNCTION trg_fn_notify_admitted();
 
--- 7. app_setting is a generic key/value table (ROUND_OPEN, RESULT_READY,
+-- 6. app_setting is a generic key/value table (ROUND_OPEN, RESULT_READY,
 -- CURRENT_ROUND, ADMISSION_YEAR, ...), so ONE trigger inspects NEW.key rather
 -- than adding a table per setting. It reacts to exactly the two keys whose
 -- flip is itself the event applicants/admins care about; every other key is a
@@ -177,7 +148,7 @@ DECLARE
     v_admitted INT;
     v_waiting  INT;
 BEGIN
-    -- 7a. Applicant: results just published (sp_publish_results). One
+    -- 6a. Applicant: results just published (sp_publish_results). One
     -- notification per decided application, deep-linked to it.
     IF NEW.key = 'RESULT_READY' AND NEW.value = 'TRUE'
        AND (TG_OP = 'INSERT' OR OLD.value IS DISTINCT FROM 'TRUE') THEN
@@ -190,7 +161,7 @@ BEGIN
           JOIN application a ON a.application_id = r.application_id;
     END IF;
 
-    -- 7b. Master admin: a lottery round just finished (sp_run_lottery updates
+    -- 6b. Master admin: a lottery round just finished (sp_run_lottery updates
     -- CURRENT_ROUND last, after every admission_result row for the round
     -- already exists), so the "Publish results" step isn't missed.
     IF NEW.key = 'CURRENT_ROUND' AND (TG_OP = 'INSERT' OR OLD.value IS DISTINCT FROM NEW.value) THEN

@@ -37,9 +37,10 @@ router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
 }));
 
 // Operations dashboard ------------------------------------------------------
-// One call for the admin landing panel: the two switches that actually govern
-// the public site (is the application window open, are results published) plus
-// the counts that tell the admin whether either switch is safe to flip.
+// Everything the admin's two control switches need in one call: whether the
+// application window is open, whether results are published, and whether a draw
+// exists that has NOT been published yet (the state the separate "Run lottery"
+// and "Publish results" buttons exist to make visible).
 router.get('/dashboard', asyncHandler(async (_req, res) => {
   const settings = await query(
     `SELECT key, value, updated_at FROM app_setting
@@ -60,8 +61,6 @@ router.get('/dashboard', asyncHandler(async (_req, res) => {
     round_open: s.ROUND_OPEN === 'TRUE',
     result_ready: s.RESULT_READY === 'TRUE',
     current_round: parseInt(s.CURRENT_ROUND || '0', 10),
-    // A run exists but has not been published — the state the separate
-    // "Run lottery" / "Publish results" buttons are there to make visible.
     results_pending_publish: Number(c.results) > 0 && s.RESULT_READY !== 'TRUE',
     published_at: s.RESULT_READY === 'TRUE' ? publishedAt : null,
     last_run_at: c.last_run_at,
@@ -86,7 +85,8 @@ router.post('/round',
 // Lottery -------------------------------------------------------------------
 // Runs the draw ONLY. It closes the application window and writes the results,
 // but leaves them unpublished — the applicant side and the public result
-// lookup stay unaware until POST /admin/results/publish.
+// lookup stay unaware until POST /admin/results/publish. Reporting `published:
+// false` here is what stops the UI claiming the opposite.
 router.post('/lottery',
   body('round').optional().isInt({ min: 1 }),
   validate,
@@ -97,6 +97,9 @@ router.post('/lottery',
   }));
 
 // Publication ---------------------------------------------------------------
+// Deliberately separate from the draw: allocating seats and telling the country
+// about it are two different decisions, and only the second is irreversible in
+// practice.
 router.post('/results/publish', asyncHandler(async (_req, res) => {
   await query('CALL sp_publish_results()');
   res.json({ result_ready: true });
@@ -182,10 +185,8 @@ router.post('/quota-types/rebalance', asyncHandler(async (_req, res) => {
 }));
 
 // Class age eligibility — READ ONLY for the master admin.
-// The national windows are policy: the admin can see them but not change them.
-// Each school sets its own (narrower) window through the authority portal
-// (POST /authority/class-eligibility), so admission criteria belong to the
-// school that admits the student, not to the central operator.
+// The national windows are set by the government: the admin can see them but
+// not change them, and school authorities cannot change them either.
 router.get('/class-eligibility', asyncHandler(async (_req, res) => {
   const { rows } = await query('SELECT * FROM fn_class_eligibility_info()');
   res.json(rows);
@@ -226,24 +227,18 @@ router.post('/settings',
 router.get('/analytics/division', asyncHandler(async (req, res) => {
   const division = req.query.division;
   const { rows } = await query(`
-    SELECT 
-      COUNT(*) AS total_choices,
-      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / COUNT(*) * 100 AS choice1_pct,
-      SUM(CASE WHEN pref = 1 THEN 1 ELSE 0 END)::float / NULLIF(s.capacity,0) AS demand_ratio,
-      json_agg(json_build_object(
-        'eiin', s.eiin,
-        'school_name', s.name,
-        'capacity', s.capacity,
-        'choice1_hits', COUNT(CASE WHEN ac.preference = 1 THEN 1 END),
-        'total_hits', COUNT(*)
-      )) AS top_schools
+    SELECT
+      s.eiin,
+      s.name AS school_name,
+      s.seats_remaining AS capacity,
+      s.total_choices,
+      s.admitted_count
     FROM vw_school_dashboard s
-    JOIN application_choice ac ON ac.seat_id = s.seat_id
-    WHERE s.division = $1
-    GROUP BY s.eiin, s.name, s.capacity
-    ORDER BY choice1_hits DESC
+    JOIN postcode pc ON pc.postcode = s.postcode
+    WHERE ($1::text IS NULL OR pc.division = $1)
+    ORDER BY s.total_choices DESC
     LIMIT 10;
-  `, [division]);
+  `, [division || null]);
   res.json(rows);
 }));
 
@@ -251,12 +246,16 @@ router.get('/analytics/division', asyncHandler(async (req, res) => {
 router.get('/lottery-results', asyncHandler(async (req, res) => {
   const { search, status } = req.query;
   const { rows } = await query(`
-    SELECT ar.*, st.name AS student_name, sc.name AS school_name, sc.eiin
+    SELECT ar.application_id, ar.bc_no, ar.student_name, ar.status,
+           ar.allocated_quota, ar.eiin, ar.school_name, ar.class_level, ar.round, ar.decided_at,
+           a.lifecycle_status
     FROM vw_admission_result ar
-    JOIN student st ON st.bc_no = ar.bc_no
-    JOIN seat sc ON sc.seat_id = ar.seat_id
-    WHERE ($1 IS NULL OR ar.application_id ILIKE $1 OR st.name ILIKE $1 OR st.bc_no ILIKE $1)
-      AND ($2 IS NULL OR ar.result_status = $2);
+    JOIN application a ON a.application_id = ar.application_id
+    WHERE ($1::text IS NULL OR ar.application_id ILIKE $1 OR ar.student_name ILIKE $1 OR ar.bc_no ILIKE $1)
+      -- ar.status is result_status_t, so the text parameter has to be cast:
+      -- without it every call failed with "operator does not exist:
+      -- result_status_t = text", which 400'd the whole results viewer.
+      AND ($2::text IS NULL OR ar.status = $2::result_status_t);
   `, [search ? `%${search}%` : null, status && status !== 'ALL' ? status : null]);
   res.json(rows);
 }));
@@ -281,17 +280,24 @@ router.post('/lottery/disqualify',
 );
 
 // --- Notification inbox (master-admin side) --------------------------------
-// A single shared inbox for the role: DB triggers post here for events an
-// office handles collectively (a deletion request pending review, a lottery
-// round finishing) — see database/triggers/03_notifications.sql.
+// Admin is the one role that sees every notification in the system, not just
+// its own — this query drops the audience filter the applicant/school
+// endpoints use, and selects `audience` so the client can label where each
+// row came from. DELETION_REQUESTED and LOTTERY_RUN still feed this role's
+// own MASTER_ADMIN rows exactly as before — see
+// database/triggers/03_notifications.sql for all of it.
 router.get('/notifications', asyncHandler(async (_req, res) => {
   const { rows } = await query(
-    `SELECT notification_id, application_id, type, title, body, is_read, created_at
-     FROM notification WHERE audience = 'MASTER_ADMIN'
-     ORDER BY created_at DESC LIMIT 50`);
+    `SELECT notification_id, audience, application_id, type, title, body, is_read, created_at
+     FROM notification
+     ORDER BY created_at DESC LIMIT 150`);
   res.json(rows);
 }));
 
+// Mark-read stays scoped to MASTER_ADMIN rows only: is_read is the actual
+// recipient's read receipt, not a personal-to-admin flag, so admin can look
+// at an applicant's or school's notification above without silently marking
+// it read on their behalf. Those foreign rows render read-only client-side.
 router.post('/notifications/:id/read', asyncHandler(async (req, res) => {
   await query(
     `UPDATE notification SET is_read = TRUE WHERE notification_id = $1 AND audience = 'MASTER_ADMIN'`,

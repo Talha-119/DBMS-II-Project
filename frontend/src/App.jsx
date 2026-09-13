@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes, Navigate } from 'react-router-dom';
 import { getRole, getToken } from './api/client';
 import { useRoundStatus } from './api/roundStatus';
-import NotificationBell from './components/NotificationBell.jsx';
+import AnnouncementBell from './components/AnnouncementBell.jsx';
 import Home from './pages/Home.jsx';
 import Apply from './pages/Apply.jsx';
 import Seats from './pages/Seats.jsx';
@@ -46,7 +46,7 @@ export default function App() {
             <NavLink to="/retrieve">Download / Delete</NavLink>
             {resultReady && <NavLink to="/result">Result</NavLink>}
             <NavLink to="/recover">Recover ID</NavLink>
-            {staffBasePath && <NotificationBell basePath={staffBasePath} />}
+            {staffBasePath && <AnnouncementBell basePath={staffBasePath} />}
             <NavLink to="/login" className="nav-staff">Admin / School Authority Login</NavLink>
           </nav>
         </div>

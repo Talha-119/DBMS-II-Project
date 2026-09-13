@@ -12,7 +12,6 @@ export default function Authority() {
   const [results, setResults] = useState([]);
   const [classes, setClasses] = useState([]);
   const [form, setForm] = useState({ class_level: '', shift: 'DAY', seat_gender: 'BOTH', total: '' });
-  const [nc, setNc] = useState({ class_level: '', min_dob: '', max_dob: '' });
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -31,7 +30,7 @@ export default function Authority() {
   useEffect(() => { loadAll(); }, []);
 
   // Local date parts, not toISOString(): the API sends dates as UTC instants, so
-  // toISOString() would shift them a day back here and re-save the wrong window.
+  // toISOString() would show them a day early here.
   const isoDate = (d) => {
     const x = new Date(d);
     return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
@@ -62,31 +61,6 @@ export default function Authority() {
     if (!window.confirm(`Delete the class ${s.class_level} ${s.shift} (${s.seat_gender}) seat row?`)) return;
     setErr(''); setMsg('');
     try { await api.delete(`/authority/seats/${s.seat_id}`); setMsg('Seat row deleted.'); loadAll(); }
-    catch (e) { setErr(apiError(e)); }
-  }
-
-  // --- This school's own age criteria (may only narrow the national window) ---
-  async function saveClass(e) {
-    e.preventDefault(); setErr(''); setMsg('');
-    try {
-      await api.post('/authority/class-eligibility', {
-        class_level: Number(nc.class_level), min_dob: nc.min_dob, max_dob: nc.max_dob,
-      });
-      setMsg(`Class ${nc.class_level} window saved for this school.`);
-      setNc({ class_level: '', min_dob: '', max_dob: '' });
-      loadAll();
-    } catch (e) { setErr(apiError(e)); }
-  }
-
-  function editClass(c) {
-    setErr(''); setMsg('');
-    setNc({ class_level: String(c.class_level), min_dob: isoDate(c.min_dob), max_dob: isoDate(c.max_dob) });
-  }
-
-  async function resetClass(level) {
-    if (!window.confirm(`Reset class ${level} to the national window?`)) return;
-    setErr(''); setMsg('');
-    try { await api.delete(`/authority/class-eligibility/${level}`); setMsg(`Class ${level} follows the national window again.`); loadAll(); }
     catch (e) { setErr(apiError(e)); }
   }
 
@@ -148,15 +122,14 @@ export default function Authority() {
       </div>
 
       <div className="card">
-        <h3>Our admission age criteria</h3>
+        <h3>Admission age criteria</h3>
         <p className="help">
-          The date-of-birth window this school accepts for each class. By default every class follows
-          the national window; you may <b>narrow</b> it to your own criteria, never widen it. Applicants
-          outside your window are rejected when they pick one of your seats. Age limits are shown at
-          1 January of the admission year.
+          The date-of-birth window accepted for each class. These limits are set by the government and
+          cannot be changed by the school. Applicants outside the window are rejected when they pick one
+          of your seats. Age limits are shown at 1 January of the admission year.
         </p>
         <table>
-          <thead><tr><th>Class</th><th>We accept from</th><th>We accept to</th><th>Age limit</th><th>National window</th><th>Source</th><th></th></tr></thead>
+          <thead><tr><th>Class</th><th>Accepted from</th><th>Accepted to</th><th>Age limit</th></tr></thead>
           <tbody>
             {classes.map((c) => (
               <tr key={c.class_level}>
@@ -164,33 +137,10 @@ export default function Authority() {
                 <td>{isoDate(c.min_dob)}</td>
                 <td>{isoDate(c.max_dob)}</td>
                 <td>{c.min_age}-{c.max_age}</td>
-                <td className="muted">{isoDate(c.national_min_dob)} … {isoDate(c.national_max_dob)}</td>
-                <td>{c.is_custom ? <Badge value="OURS" /> : <span className="muted">national</span>}</td>
-                <td className="btn-row">
-                  <button className="btn-secondary" onClick={() => editClass(c)}>Edit</button>
-                  {c.is_custom && <button className="btn-danger" onClick={() => resetClass(c.class_level)}>Reset</button>}
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
-        <form onSubmit={saveClass} className="row" style={{ marginTop: 12 }}>
-          <Field label="Class">
-            <select value={nc.class_level} onChange={(e) => setNc({ ...nc, class_level: e.target.value })}>
-              <option value="">Select…</option>
-              {classes.map((c) => <option key={c.class_level} value={c.class_level}>Class {c.class_level}</option>)}
-            </select>
-          </Field>
-          <Field label="Accept from (earliest DOB)">
-            <input type="date" value={nc.min_dob} onChange={(e) => setNc({ ...nc, min_dob: e.target.value })} />
-          </Field>
-          <Field label="Accept to (latest DOB)">
-            <input type="date" value={nc.max_dob} onChange={(e) => setNc({ ...nc, max_dob: e.target.value })} />
-          </Field>
-          <div style={{ alignSelf: 'end' }} className="btn-row">
-            <button type="submit" disabled={!nc.class_level || !nc.min_dob || !nc.max_dob}>Save our window</button>
-          </div>
-        </form>
       </div>
 
       <div className="card">
