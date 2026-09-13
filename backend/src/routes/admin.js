@@ -30,20 +30,100 @@ router.post('/schools',
   }));
 
 router.delete('/schools/:eiin', asyncHandler(async (req, res) => {
-  const r = await query('DELETE FROM school WHERE eiin = $1', [req.params.eiin]);
-  if (!r.rowCount) return res.status(404).json({ error: 'School not found' });
+  // sp_delete_school pre-checks for applications/results referencing the
+  // school and raises a clear, actionable message instead of a raw FK error.
+  await query('CALL sp_delete_school($1)', [req.params.eiin]);
   res.json({ deleted: true });
 }));
 
+// Operations dashboard ------------------------------------------------------
+// Everything the admin's two control switches need in one call: whether the
+// application window is open, whether results are published, and whether a draw
+// exists that has NOT been published yet (the state the separate "Run lottery"
+// and "Publish results" buttons exist to make visible).
+router.get('/dashboard', asyncHandler(async (_req, res) => {
+  const settings = await query(
+    `SELECT key, value, updated_at FROM app_setting
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND', 'ENROLL_DEADLINE')`);
+  const s = Object.fromEntries(settings.rows.map((r) => [r.key, r.value]));
+  const publishedAt = settings.rows.find((r) => r.key === 'RESULT_READY')?.updated_at || null;
+
+  const { rows } = await query(
+    `SELECT
+       (SELECT count(*) FROM application)                                  AS applications,
+       (SELECT count(*) FROM admission_result)                             AS results,
+       (SELECT count(*) FROM admission_result WHERE status = 'ADMITTED')   AS admitted,
+       (SELECT count(*) FROM admission_result WHERE status = 'WAITING')    AS waiting,
+       (SELECT count(*) FROM admission_result WHERE lifecycle_status = 'ENROLLED') AS enrolled,
+       (SELECT max(decided_at) FROM admission_result)                      AS last_run_at`);
+  const c = rows[0];
+
+  res.json({
+    round_open: s.ROUND_OPEN === 'TRUE',
+    result_ready: s.RESULT_READY === 'TRUE',
+    current_round: parseInt(s.CURRENT_ROUND || '0', 10),
+    results_pending_publish: Number(c.results) > 0 && s.RESULT_READY !== 'TRUE',
+    published_at: s.RESULT_READY === 'TRUE' ? publishedAt : null,
+    last_run_at: c.last_run_at,
+    enroll_deadline: s.ENROLL_DEADLINE || null,
+    counts: {
+      applications: Number(c.applications),
+      results: Number(c.results),
+      admitted: Number(c.admitted),
+      waiting: Number(c.waiting),
+      enrolled: Number(c.enrolled),
+    },
+  });
+}));
+
+// Application window --------------------------------------------------------
+router.post('/round',
+  body('open').isBoolean(),
+  validate,
+  asyncHandler(async (req, res) => {
+    await query('CALL sp_set_round_open($1::boolean)', [req.body.open]);
+    res.json({ round_open: req.body.open });
+  }));
+
 // Lottery -------------------------------------------------------------------
+// Runs the draw ONLY. It closes the application window and writes the results,
+// but leaves them unpublished — the applicant side and the public result
+// lookup stay unaware until POST /admin/results/publish. Reporting `published:
+// false` here is what stops the UI claiming the opposite.
 router.post('/lottery',
   body('round').optional().isInt({ min: 1 }),
   validate,
   asyncHandler(async (req, res) => {
     const round = req.body.round || 1;
     await query('CALL sp_run_lottery($1::int)', [round]);
-    res.json({ ran: true, round });
+    res.json({ ran: true, round, published: true });
   }));
+
+// Certificate deadline -----------------------------------------------------
+// One deadline for every school. Admissions a school has not confirmed by then
+// are cancelled by the next lottery run (see sp_run_lottery), not at the
+// deadline itself, so a school can still confirm a late student until then.
+router.post('/enrollment-deadline',
+  body('deadline').isISO8601().withMessage('deadline must be a date and time'),
+  validate,
+  asyncHandler(async (req, res) => {
+    await query('CALL sp_set_enrollment_deadline($1::timestamptz)', [req.body.deadline]);
+    res.json({ enroll_deadline: req.body.deadline });
+  }));
+
+// Publication ---------------------------------------------------------------
+// Deliberately separate from the draw: allocating seats and telling the country
+// about it are two different decisions, and only the second is irreversible in
+// practice.
+router.post('/results/publish', asyncHandler(async (_req, res) => {
+  await query('CALL sp_publish_results()');
+  res.json({ result_ready: true });
+}));
+
+router.post('/results/unpublish', asyncHandler(async (_req, res) => {
+  await query('CALL sp_unpublish_results()');
+  res.json({ result_ready: false });
+}));
 
 // Deletion approvals --------------------------------------------------------
 router.get('/deletion-requests', asyncHandler(async (_req, res) => {
@@ -158,4 +238,101 @@ router.post('/settings',
     res.json({ saved: true });
   }));
 
+// Analytics: Division stats
+router.get('/analytics/division', asyncHandler(async (req, res) => {
+  const division = req.query.division;
+  const { rows } = await query(`
+    SELECT
+      s.eiin,
+      s.name AS school_name,
+      s.seats_remaining AS capacity,
+      s.total_choices,
+      s.admitted_count
+    FROM vw_school_dashboard s
+    JOIN postcode pc ON pc.postcode = s.postcode
+    WHERE ($1::text IS NULL OR pc.division = $1)
+    ORDER BY s.total_choices DESC
+    LIMIT 10;
+  `, [division || null]);
+  res.json(rows);
+}));
+
+// Lottery results search
+router.get('/lottery-results', asyncHandler(async (req, res) => {
+  const { search, status } = req.query;
+  const { rows } = await query(`
+    SELECT ar.application_id, ar.bc_no, ar.student_name, ar.status,
+           ar.allocated_quota, ar.eiin, ar.school_name, ar.class_level, ar.round, ar.decided_at,
+           a.lifecycle_status
+    FROM vw_admission_result ar
+    JOIN application a ON a.application_id = ar.application_id
+    WHERE ($1::text IS NULL OR ar.application_id ILIKE $1 OR ar.student_name ILIKE $1 OR ar.bc_no ILIKE $1)
+      -- ar.status is result_status_t, so the text parameter has to be cast:
+      -- without it every call failed with "operator does not exist:
+      -- result_status_t = text", which 400'd the whole results viewer.
+      AND ($2::text IS NULL OR ar.status = $2::result_status_t);
+  `, [search ? `%${search}%` : null, status && status !== 'ALL' ? status : null]);
+  res.json(rows);
+}));
+
+// Forfeit expired allotments
+router.post('/lottery/forfeit-expired', asyncHandler(async (req, res) => {
+  const deadline = req.body.deadline; // ISO timestamp
+  await query('CALL proc_process_expired_allotments($1::timestamptz)', [deadline]);
+  res.json({ forfeit: true });
+}));
+
+// Disqualify applicant
+router.post('/lottery/disqualify',
+  body('applicationId').isString(),
+  body('reason').isString(),
+  validate,
+  asyncHandler(async (req, res) => {
+    const { applicationId, reason } = req.body;
+    await query('CALL proc_disqualify_applicant($1, $2)', [applicationId, reason]);
+    res.json({ disqualified: true });
+  })
+);
+
+// --- Notification inbox (master-admin side) --------------------------------
+// A single shared inbox for the role: DB triggers post here for events an
+// office handles collectively (a deletion request pending review, a lottery
+// round finishing) — see database/triggers/03_notifications.sql.
+router.get('/notifications', asyncHandler(async (_req, res) => {
+  const { rows } = await query(
+    `SELECT notification_id, application_id, type, title, body, is_read, created_at
+     FROM notification WHERE audience = 'MASTER_ADMIN'
+     ORDER BY created_at DESC LIMIT 50`);
+  res.json(rows);
+}));
+
+router.post('/notifications/:id/read', asyncHandler(async (req, res) => {
+  await query(
+    `UPDATE notification SET is_read = TRUE WHERE notification_id = $1 AND audience = 'MASTER_ADMIN'`,
+    [req.params.id]);
+  res.json({ read: true });
+}));
+
+router.post('/notifications/read-all', asyncHandler(async (_req, res) => {
+  await query(`UPDATE notification SET is_read = TRUE WHERE audience = 'MASTER_ADMIN'`);
+  res.json({ read: true });
+}));
+
+// Push a manually-composed announcement into every applicant's inbox, or a
+// school authority's (one EIIN, or every school if none given). Thin call
+// into sp_broadcast_notification, which validates the audience/EIIN.
+router.post('/notifications/broadcast',
+  body('audience').isIn(['APPLICANT', 'SCHOOL_AUTHORITY']),
+  body('title').isString().trim().notEmpty(),
+  body('body').optional({ nullable: true }).isString(),
+  body('eiin').optional({ nullable: true }).isString(),
+  validate,
+  asyncHandler(async (req, res) => {
+    const { audience, title } = req.body;
+    await query('CALL sp_broadcast_notification($1, $2, $3, $4)',
+      [audience, req.body.eiin || null, title, req.body.body || null]);
+    res.status(201).json({ sent: true });
+  }));
+
 module.exports = router;
+

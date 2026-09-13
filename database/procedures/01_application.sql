@@ -6,6 +6,29 @@
 -- application can never be persisted.
 -- ============================================================================
 
+-- The signature gained p_photo (BUG-005). CREATE OR REPLACE cannot change an
+-- argument list: it would leave the old 15-argument procedure in place beside
+-- the new one, and every CALL would then be ambiguous. So any overload that is
+-- not the current one is dropped first. Guarded by a count rather than by a
+-- literal type list so a re-run (migrate.js replays this file on every `up`)
+-- finds nothing to drop and does nothing.
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        -- Rendered to text up front: once the DROP has run, the regprocedure
+        -- has no name left to print and would report a bare OID.
+        SELECT oid::regprocedure::TEXT AS sig
+          FROM pg_proc
+         WHERE proname = 'sp_submit_application'
+           AND pronargs <> 16
+    LOOP
+        EXECUTE 'DROP PROCEDURE ' || r.sig;
+        RAISE NOTICE 'dropped superseded overload %', r.sig;
+    END LOOP;
+END $$;
+
 CREATE OR REPLACE PROCEDURE sp_submit_application(
     p_bc_no              TEXT,
     p_religion           religion_t,
@@ -21,6 +44,11 @@ CREATE OR REPLACE PROCEDURE sp_submit_application(
     p_applying_postcode  TEXT,
     p_prev_school_name   TEXT,
     p_choices            JSONB,
+    -- Already-normalized JPEG bytes, or NULL. The photo travels through the
+    -- procedure rather than through a follow-up UPDATE so that the profile, the
+    -- application, its choices and the photograph all commit or all roll back
+    -- together -- the one-atomic-write property everything else here has.
+    p_photo              BYTEA DEFAULT NULL,
     INOUT p_application_id TEXT DEFAULT NULL
 )
 LANGUAGE plpgsql AS $$
@@ -45,6 +73,15 @@ DECLARE
     v_win_min    DATE;
     v_win_max    DATE;
 BEGIN
+    -- 0. The admission window must be open. The admin closes it from the portal
+    --    dashboard, and running the lottery closes it automatically — after a
+    --    draw has allocated seats, a late application would be competing for
+    --    capacity that has already been given away.
+    IF COALESCE((SELECT value FROM app_setting WHERE key = 'ROUND_OPEN'), 'TRUE') <> 'TRUE' THEN
+        RAISE EXCEPTION 'Applications are closed. The admission window is not open right now.'
+            USING ERRCODE = '23514';
+    END IF;
+
     -- 1. Identity comes from the birth-certificate registry (never typed).
     SELECT dob, gender INTO v_dob, v_gender FROM birth_certificate WHERE bc_no = p_bc_no;
     IF NOT FOUND THEN
@@ -136,13 +173,38 @@ BEGIN
             RAISE EXCEPTION 'Previous school cannot be changed for a returning applicant; it was confirmed by your first application'
                 USING ERRCODE = '23514';
         END IF;
+
+        -- The photograph is the one profile field that is not a plain equality
+        -- check, because "not supplied" and "different" are different requests.
+        --
+        --   * p_photo NULL      -> the applicant did not upload one this time.
+        --                          Whatever is on file stands. A returning
+        --                          applicant's form shows the stored photo and
+        --                          does not re-send it, so this is the normal
+        --                          path, and it must not be read as "clear it".
+        --   * nothing on file   -> fill it. Students who applied before this
+        --                          column existed, or who skipped the upload,
+        --                          can still add a photo on a later application.
+        --   * different bytes   -> refused, and named, exactly like every other
+        --                          locked field above. The upload route
+        --                          re-encodes deterministically, so re-uploading
+        --                          the identical file lands on the equal branch
+        --                          and is a silent no-op rather than an error.
+        IF p_photo IS NOT NULL THEN
+            IF v_student.photo IS NULL THEN
+                UPDATE student SET photo = p_photo WHERE bc_no = p_bc_no;
+            ELSIF v_student.photo <> p_photo THEN
+                RAISE EXCEPTION 'Photograph cannot be changed for a returning applicant; the one on file was set by an earlier application'
+                    USING ERRCODE = '23514';
+            END IF;
+        END IF;
     ELSE
         INSERT INTO student (bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
                              present_postcode, present_detail, permanent_postcode, permanent_detail,
-                             desired_class, prev_school_name)
+                             desired_class, prev_school_name, photo)
         VALUES (p_bc_no, p_religion, p_mobile, p_father_nid, p_mother_nid, p_local_nid,
                 p_present_postcode, p_present_detail, p_permanent_postcode, p_permanent_detail,
-                p_desired_class, p_prev_school_name);
+                p_desired_class, p_prev_school_name, p_photo);
     END IF;
 
     -- 6. Create the application (id generated by sequence-backed function).
@@ -245,13 +307,32 @@ BEGIN
             RAISE EXCEPTION 'Each choice must claim at least one quota' USING ERRCODE = '23514';
         END IF;
 
-        -- A student may not reuse the same seat across their applications.
+        -- A student may not choose the same SCHOOL twice — not across their
+        -- applications, and not twice within this one.
+        --
+        -- This was originally written at seat level (ac.seat_id = v_seat_id),
+        -- which was too narrow: a school may offer more than one seat row for the
+        -- same class (one per shift), so the same school could be re-picked
+        -- through a different shift and pass the check. Stating the rule at
+        -- school level closes that and makes the rule the obvious one — one
+        -- student, one shot per school.
+        --
+        -- Choices inserted earlier in this same transaction are visible here, so
+        -- the same query also rejects a duplicate school inside the choice list
+        -- being submitted right now.
+        --
+        -- DELETED applications are excluded: withdrawing an application releases
+        -- the schools it held.
         IF EXISTS (
             SELECT 1 FROM application_choice ac
             JOIN application a ON a.application_id = ac.application_id
-            WHERE a.bc_no = p_bc_no AND ac.seat_id = v_seat_id
+            JOIN seat se       ON se.seat_id = ac.seat_id
+            WHERE a.bc_no = p_bc_no
+              AND a.status <> 'DELETED'
+              AND se.eiin = v_seat.eiin
         ) THEN
-            RAISE EXCEPTION 'Seat % was already used in a previous application of this student', v_seat_id
+            RAISE EXCEPTION 'You have already applied to this school (%) — one application per school is allowed',
+                (SELECT name FROM school WHERE eiin = v_seat.eiin)
                 USING ERRCODE = '23505';
         END IF;
 
@@ -285,6 +366,68 @@ BEGIN
 END;
 $$;
 
+-- Decide a deletion request: the master admin approves or rejects it.
+--
+-- Approving marks the application DELETED rather than deleting the row. The
+-- application stays readable (the applicant can still see that it was deleted,
+-- and deletion_request/audit_log keep their FK targets), but it is out of the
+-- game everywhere that matters:
+--   * the lottery skips it (procedures/03_lottery.sql);
+--   * it stops counting toward the 3-application cap and the one-per-area rule
+--     (triggers/02_rules.sql), so the applicant gets that slot and area back;
+--   * its schools are released (sp_submit_application's school check).
+--
+-- If the application had already won a seat, that seat is handed back to the
+-- pool: the capacity the lottery decremented is restored and the result row is
+-- dropped, so a later round can allocate it to someone else. Without this, a
+-- deleted application would keep sitting on a seat nobody can have.
+CREATE OR REPLACE PROCEDURE sp_approve_deletion(
+    p_request_id BIGINT,
+    p_decided_by TEXT,
+    p_approve    BOOLEAN
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_req    deletion_request%ROWTYPE;
+    v_result admission_result%ROWTYPE;
+BEGIN
+    SELECT * INTO v_req FROM deletion_request WHERE request_id = p_request_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Deletion request % not found', p_request_id USING ERRCODE = '23503';
+    END IF;
+    IF v_req.status <> 'PENDING' THEN
+        RAISE EXCEPTION 'Deletion request % was already decided (%)', p_request_id, v_req.status
+            USING ERRCODE = '23505';
+    END IF;
+
+    UPDATE deletion_request
+       SET status     = CASE WHEN p_approve THEN 'APPROVED' ELSE 'REJECTED' END::deletion_status_t,
+           decided_at = now(),
+           decided_by = p_decided_by
+     WHERE request_id = p_request_id;
+
+    IF NOT p_approve THEN
+        RETURN;      -- rejected: the application is untouched
+    END IF;
+
+    -- Give back a seat this application had already been allocated.
+    SELECT * INTO v_result FROM admission_result WHERE application_id = v_req.application_id;
+    IF FOUND THEN
+        IF v_result.status = 'ADMITTED'
+           AND v_result.admitted_seat_id IS NOT NULL
+           AND v_result.allocated_quota IS NOT NULL THEN
+            UPDATE seat_quota
+               SET capacity = capacity + 1
+             WHERE seat_id = v_result.admitted_seat_id
+               AND quota_code = v_result.allocated_quota;
+        END IF;
+        DELETE FROM admission_result WHERE application_id = v_req.application_id;
+    END IF;
+
+    UPDATE application SET status = 'DELETED' WHERE application_id = v_req.application_id;
+END;
+$$;
+
 -- Pay the application fee (mock gateway). Idempotency: paying twice raises.
 CREATE OR REPLACE PROCEDURE sp_pay_fee(
     p_application_id TEXT,
@@ -305,8 +448,6 @@ BEGIN
 END;
 $$;
 
--- NOTE: approving/rejecting a deletion request (sp_approve_deletion) and running
--- the seat-allocation lottery belong to the separate school-authority/admin
--- system and are intentionally NOT part of this applicant project. The applicant
--- can only *raise* a deletion request (sp_request_deletion, above); the admin
--- system decides it.
+-- NOTE: the applicant can only *raise* a deletion request (sp_request_deletion);
+-- the master admin decides it (sp_approve_deletion, above) from the admin portal.
+-- The seat-allocation lottery lives in procedures/03_lottery.sql.

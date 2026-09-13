@@ -1,11 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import api, { apiError } from '../api/client';
+import { useRoundStatus } from '../api/roundStatus';
 import { Alert, Stepper, Field, Combobox } from '../components/ui.jsx';
-import { empty, blankArea, blankStatus, bcChanged, resetForBc } from './applyState.js';
+import { empty, blankArea, blankStatus, bcChanged, resetForBc, releasePreview } from './applyState.js';
 
 const STEPS = ['Birth Certificate', 'Mobile & OTP', 'Guardians', 'Class & Address', 'Schools & Choices', 'Review'];
 const RELIGIONS = ['ISLAM', 'HINDU', 'CHRISTIAN', 'BUDDHIST', 'OTHER'];
 const MOBILE_RE = /^01[3-9][0-9]{8}$/;
+
+// Photograph rules, mirrored from backend/src/utils/photo.js so the form can say
+// no before spending an upload on a file the server will reject anyway. The
+// server re-checks all of it -- this is a courtesy, not the enforcement.
+const PHOTO_TYPES = ['image/jpeg', 'image/png'];
+const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
+const PHOTO_MIN_SIDE = 200;
 
 // Shown when a returning applicant clicks a field their first application already
 // fixed. Informational only — there is no self-service path to change these.
@@ -103,6 +111,10 @@ export default function Apply() {
   const [schoolNames, setSchoolNames] = useState([]);
   const [lockNote, setLockNote] = useState('');
 
+  // The window is enforced in sp_submit_application; this only stops someone
+  // filling six steps of a form that cannot be submitted.
+  const { round_open: roundOpen, result_ready: resultReady, ready: statusReady } = useRoundStatus();
+
   const fRef = useRef(f); fRef.current = f;
   const ffTimers = useRef({});
 
@@ -117,6 +129,18 @@ export default function Apply() {
   const locked = f.returning;
   const noteLocked = () => setLockNote(LOCK_MSG);
   const lockRO = { readOnly: true, className: 'locked', onMouseDown: noteLocked, onFocus: noteLocked };
+
+  // Application rate limits, reported by /lookup/applicant-limits and enforced
+  // by triggers on `application`. A student holds at most MAX_APPLICATIONS live
+  // applications, at most one per area, and may use each school once. Deleted
+  // applications release all three, so these numbers move when an admin approves
+  // a deletion. Surfaced here so a spent area is refused before the form is
+  // filled rather than at the final submit.
+  const lim = f.limits;
+  const usedPostcodes = (lim && lim.used_postcodes) || [];
+  const usedSchoolCount = ((lim && lim.used_schools) || []).length;
+  const noAllowanceLeft = Boolean(lim) && lim.applications_remaining <= 0;
+  const areaAlreadyUsed = Boolean(f.applying.postcode) && usedPostcodes.includes(f.applying.postcode);
 
   // Load geography + school names once (drives the dropdowns / suggestions).
   useEffect(() => {
@@ -214,11 +238,24 @@ export default function Apply() {
         // Class and previous school are student attributes too — one child is
         // admitted into one class per session, and their school history is fixed.
         patch.desired_class = String(st.desired_class || ''); patch.prev_school_name = st.prev_school_name || '';
+        // Only whether one exists -- the image itself needs a token, so it is
+        // fetched after the OTP step (see confirmOtp).
+        patch.has_stored_photo = Boolean(st.has_photo);
       } catch { /* first-time applicant — nothing to pre-fill */ }
+      // How many applications this student may still file, and which areas and
+      // schools are already spent. Never 404s, so a first-time applicant gets
+      // the full allowance here.
+      try {
+        const { data: lim } = await api.get(`/lookup/applicant-limits/${encodeURIComponent(bc)}`);
+        patch.limits = lim;
+      } catch { /* limits unavailable — the database still enforces them on submit */ }
       up(patch);
+      const allowance = patch.limits
+        ? ` You may file ${patch.limits.applications_remaining} more application(s) of ${patch.limits.max_applications}, one per area.`
+        : '';
       setMsg(patch.returning
-        ? `Welcome back, ${data.name}. Your personal details were confirmed by your earlier application and are locked — verify your registered mobile (OTP), then pick your new area & schools.`
-        : `Verified: ${data.name} (${data.gender}, born ${data.dob.slice(0, 10)}).`);
+        ? `Welcome back, ${data.name}. Your personal details were confirmed by your earlier application and are locked — verify your registered mobile (OTP), then pick your new area & schools.${allowance}`
+        : `Verified: ${data.name} (${data.gender}, born ${data.dob.slice(0, 10)}).${allowance}`);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -236,15 +273,87 @@ export default function Apply() {
       const { data } = await api.post('/applications/verify-otp', { mobile: f.mobile, code: f.otp_code });
       up({ otp_verified: true, apply_token: data.token, otp_mobile: f.mobile });
       setMsg(`Mobile ${f.mobile} verified.`);
+      // Proving control of the registered mobile is what earns the right to see
+      // the photograph already stored against this birth certificate.
+      if (f.has_stored_photo) loadStoredPhoto(f.bc_no.trim(), data.token);
     } catch (e) { up({ otp_verified: false, apply_token: '' }); setErr(apiError(e)); } finally { setBusy(false); }
+  }
+
+  // --- Photograph ---------------------------------------------------------
+  // Two mutually exclusive sources, and which one applies is decided by the
+  // birth certificate, not by the UI:
+  //
+  //   * nothing on file  -> the applicant picks a file. There is no `student`
+  //                         row yet (it is created BY this submission), so the
+  //                         preview can only come from a local object URL. The
+  //                         bytes reach the server once, attached to the submit.
+  //   * already on file  -> the stored photo is fetched from the database and
+  //                         shown read-only. It is part of the locked profile,
+  //                         so there is nothing to pick and nothing to send.
+  function pickPhoto(file) {
+    // fRef, not `f`: this also runs from the async probe callbacks below, where
+    // the closed-over `f` may already be a render behind.
+    releasePreview(fRef.current.photo_preview);
+    if (!file) { up({ photo_file: null, photo_preview: '', photo_err: '' }); return; }
+    if (!PHOTO_TYPES.includes(file.type)) {
+      up({ photo_file: null, photo_preview: '', photo_err: 'The photograph must be a JPEG or PNG image.' });
+      return;
+    }
+    if (file.size > PHOTO_MAX_BYTES) {
+      up({ photo_file: null, photo_preview: '', photo_err: `That file is ${(file.size / (1024 * 1024)).toFixed(1)}MB. The limit is ${PHOTO_MAX_BYTES / (1024 * 1024)}MB.` });
+      return;
+    }
+    // Measure it before accepting: an image too small to be a passport photo is
+    // upscaled into a blur by the server's crop, so it is refused there, and
+    // catching it here saves the applicant a round trip.
+    const url = URL.createObjectURL(file);
+    const probe = new Image();
+    probe.onload = () => {
+      if (probe.naturalWidth < PHOTO_MIN_SIDE || probe.naturalHeight < PHOTO_MIN_SIDE) {
+        releasePreview(url);
+        up({ photo_file: null, photo_preview: '',
+             photo_err: `That image is ${probe.naturalWidth}x${probe.naturalHeight} pixels. It must be at least ${PHOTO_MIN_SIDE}x${PHOTO_MIN_SIDE}.` });
+        return;
+      }
+      up({ photo_file: file, photo_preview: url, photo_err: '' });
+    };
+    probe.onerror = () => {
+      releasePreview(url);
+      up({ photo_file: null, photo_preview: '', photo_err: 'That file could not be read as an image.' });
+    };
+    probe.src = url;
+  }
+
+  // Fetch the stored photo as a blob rather than pointing an <img> straight at
+  // the endpoint: it is served behind a token (a child's photograph is not
+  // something to publish on a URL anyone can guess), and an <img src> cannot
+  // send an Authorization header. It still renders from the database on every
+  // load -- nothing is cached in the form.
+  async function loadStoredPhoto(bc, token) {
+    try {
+      const res = await api.get(`/applications/student/${encodeURIComponent(bc)}/photo`, {
+        responseType: 'blob', headers: { Authorization: `Bearer ${token}` },
+      });
+      releasePreview(fRef.current.photo_preview);
+      up({ photo_preview: URL.createObjectURL(res.data), photo_file: null, photo_err: '' });
+    } catch { /* the review step falls back to "on file, not shown" */ }
   }
 
   async function loadSeats() {
     clear(); setBusy(true);
     try {
-      const { data } = await api.get(`/lookup/seats?postcode=${f.applying.postcode}&class=${f.desired_class}&gender=${f.gender}`);
+      // `bc` makes the server leave out schools this student already holds in a
+      // live application. One student gets one shot per school, so listing them
+      // again would only lead to a rejected submit.
+      const { data } = await api.get(
+        `/lookup/seats?postcode=${f.applying.postcode}&class=${f.desired_class}&gender=${f.gender}`
+        + `&bc=${encodeURIComponent(f.bc_no.trim())}`);
       up({ seats: data });
-      if (!data.length) setMsg('No available seats for this area / class / gender.');
+      if (!data.length) {
+        setMsg(usedSchoolCount
+          ? 'No available seats left for this area / class / gender that you have not already applied to.'
+          : 'No available seats for this area / class / gender.');
+      }
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -319,6 +428,8 @@ export default function Apply() {
     if (!presentValid || !f.present_detail.trim()) x.push('Complete a valid present address (Class & Address step).');
     if (!permanentValid || !f.permanent_detail.trim()) x.push('Complete a valid permanent address (Class & Address step).');
     if (!applyingValid) x.push('Choose a valid applying area (Schools & Choices step).');
+    if (areaAlreadyUsed) x.push(`You already have an application in area ${f.applying.postcode} — only one application per area is allowed (Schools & Choices step).`);
+    if (noAllowanceLeft) x.push(`You already hold the maximum of ${lim.max_applications} applications — delete one before filing another.`);
     if (!f.choices.length) x.push('Add at least one school choice (Schools & Choices step).');
     return x;
   }
@@ -346,7 +457,24 @@ export default function Apply() {
           return { seat_id: c.seat_id, preference: c.preference, quotas: q };
         }),
       };
-      const { data } = await api.post('/applications', payload);
+      // A photograph makes the submission multipart: the file cannot travel in
+      // JSON without base64-inflating it by a third. Without one the request
+      // stays exactly the plain JSON POST it has always been -- the server
+      // accepts both, so nothing about the no-photo path changes.
+      let data;
+      if (f.photo_file) {
+        const fd = new FormData();
+        Object.entries(payload).forEach(([k, v]) => {
+          if (v === null || v === undefined) return;          // omitted, not "null"
+          fd.append(k, k === 'choices' ? JSON.stringify(v) : v);
+        });
+        fd.append('photo', f.photo_file, f.photo_file.name);
+        // No explicit Content-Type: the browser has to set it, because only it
+        // knows the multipart boundary it generated.
+        ({ data } = await api.post('/applications', fd));
+      } else {
+        ({ data } = await api.post('/applications', payload));
+      }
       setDone(data.application_id);
     } catch (e) { setSubmitErr([apiError(e)]); } finally { setBusy(false); }
   }
@@ -361,7 +489,25 @@ export default function Apply() {
         <Alert kind="ok">Your Applicant ID is <b>{done}</b>. Save it. You can download your PDF copy from the “Download / Delete” page.</Alert>
         <div className="btn-row">
           <a className="btn" href={`/retrieve`}>Go to Download</a>
-          <button className="btn-secondary" onClick={() => { setF(empty); setStep(0); setDone(null); setSubmitErr([]); }}>New application</button>
+          <button className="btn-secondary" onClick={() => { releasePreview(f.photo_preview); setF(empty); setStep(0); setDone(null); setSubmitErr([]); }}>New application</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (statusReady && !roundOpen) {
+    return (
+      <div className="card">
+        <h2>New Application</h2>
+        <Alert kind="warn">The admission window is closed — new applications are not being accepted.</Alert>
+        <p className="muted">
+          {resultReady
+            ? 'The lottery has been held and the results are published. Check your result from the “Result” page.'
+            : 'Applications will reopen when the admission authority opens the next round. If you have already applied, you can still download your copy from the “Download / Delete” page.'}
+        </p>
+        <div className="btn-row">
+          <a className="btn btn-secondary" href="/">Back to home</a>
+          {resultReady && <a className="btn btn-secondary" href="/result">Check result</a>}
         </div>
       </div>
     );
@@ -406,6 +552,7 @@ export default function Apply() {
                 // Editing a verified certificate invalidates the whole session:
                 // every field below is derived from it. Same rule as the mobile.
                 if (bcChanged(f, v)) {
+                  releasePreview(f.photo_preview);
                   setF(resetForBc(v));
                   setStep(0); setErr(''); setLockNote('');
                   setMsg('Birth certificate changed — everything from the previous certificate has been cleared. Verify the new one to continue.');
@@ -551,10 +698,35 @@ export default function Apply() {
         <>
           <h3>Applying School Area</h3>
           <p className="muted">Pick the area you want to apply in, then load its available seats.</p>
+
+          {lim && (
+            <p className="help">
+              Applications used: <b>{lim.applications_used}</b> of <b>{lim.max_applications}</b>.
+              {usedPostcodes.length > 0 && <> Already applied in area(s) <b>{usedPostcodes.join(', ')}</b> — one application per area.</>}
+              {usedSchoolCount > 0 && <> Schools you have already applied to are not listed below.</>}
+            </p>
+          )}
+
+          {noAllowanceLeft && (
+            <Alert kind="error">
+              You already hold {lim.applications_used} applications, which is the maximum.
+              Delete one from the Retrieve page (an admin must approve it) before filing another.
+            </Alert>
+          )}
+
           <AddressPicker geo={geo} value={f.applying}
             onChange={(v) => up({ applying: v, ...(v.postcode !== f.applying.postcode ? { choices: [], seats: [] } : {}) })} />
+
+          {areaAlreadyUsed && (
+            <Alert kind="error">
+              You already have an application in area {f.applying.postcode}. Only one application per
+              area is allowed — pick a different area, or delete the existing application first.
+            </Alert>
+          )}
+
           <div className="btn-row">
-            <button className={applyingValid ? 'btn-ready' : 'btn-secondary'} onClick={loadSeats} disabled={busy || !applyingValid}>Load available seats</button>
+            <button className={applyingValid && !areaAlreadyUsed && !noAllowanceLeft ? 'btn-ready' : 'btn-secondary'}
+              onClick={loadSeats} disabled={busy || !applyingValid || areaAlreadyUsed || noAllowanceLeft}>Load available seats</button>
           </div>
           {areaEligible && <p className="help">Your present address is in this area — you qualify for the <b>Area</b> quota on these choices.</p>}
 
@@ -616,9 +788,55 @@ export default function Apply() {
       {step === 5 && (
         <>
           <p className="muted">Please review your application below exactly as it will be recorded. Confirm to submit, or go back to edit any section.</p>
+          {/* Photograph. It lives on the review step because this is the page
+              that shows the form as it will be recorded -- the picture is
+              dropped straight into the slot it will occupy on the printed copy,
+              so what is uploaded and what is filed are visibly the same thing. */}
+          <h3>Photograph</h3>
+          {f.has_stored_photo ? (
+            <p className="muted">
+              Your photograph was recorded by an earlier application and is part of your locked
+              profile — like your guardians and address, it cannot be replaced here.
+            </p>
+          ) : (
+            <p className="muted">
+              Optional. A passport-style photograph (JPEG or PNG, at least {PHOTO_MIN_SIDE}×{PHOTO_MIN_SIDE} pixels).
+              It is cropped to the standard 35mm×45mm shape and stored with your application —
+              once filed it is locked, so choose the one you want printed on your copy.
+            </p>
+          )}
+          <div className="photo-pick">
+            <div className={`photo-slot${f.photo_preview ? '' : ' empty'}`}>
+              {f.photo_preview
+                ? <img src={f.photo_preview} alt="Applicant photograph" />
+                : <span>{f.has_stored_photo ? 'On file' : 'No photograph'}</span>}
+            </div>
+            {!f.has_stored_photo && (
+              <div className="photo-pick-controls">
+                <input type="file" accept="image/jpeg,image/png"
+                  onChange={(e) => { pickPhoto(e.target.files && e.target.files[0]); e.target.value = ''; }} />
+                {f.photo_file && (
+                  <div className="field-ok">
+                    ✓ {f.photo_file.name} ({(f.photo_file.size / 1024).toFixed(0)} KB) — will be cropped to 35mm×45mm
+                  </div>
+                )}
+                {f.photo_err && <div className="field-err">{f.photo_err}</div>}
+                {f.photo_file && (
+                  <button className="btn-secondary" type="button" onClick={() => pickPhoto(null)}>Remove photo</button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="doc">
             <h3 className="doc-title">Government School Admission System</h3>
             <p className="doc-sub">Applicant Copy — Preview (not yet submitted)</p>
+            {/* Mirrors the top-right photo box on the PDF (backend/src/utils/pdf.js). */}
+            <div className={`doc-photo${f.photo_preview ? '' : ' empty'}`}>
+              {f.photo_preview
+                ? <img src={f.photo_preview} alt="Applicant photograph" />
+                : <span>No photograph{f.has_stored_photo ? ' shown' : ' on file'}</span>}
+            </div>
 
             <h4>Student (from Birth Certificate)</h4>
             <div className="doc-row"><b>Birth Certificate No</b><span>{f.bc_no}</span></div>

@@ -29,6 +29,47 @@ BEGIN
 END;
 $$;
 
+-- Delete a school outright (master-admin "Delete" button). A plain `DELETE FROM
+-- school` would cascade onto its seats/account/eligibility rows fine, but would
+-- hit the (deliberately non-cascading) FKs from application_choice and
+-- admission_result and abort with a raw, unreadable constraint error. Check
+-- those blockers first and raise a message an admin can actually act on.
+CREATE OR REPLACE PROCEDURE sp_delete_school(
+    p_eiin TEXT
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_chosen   INT;
+    v_admitted INT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM school WHERE eiin = p_eiin) THEN
+        RAISE EXCEPTION 'School % not found', p_eiin USING ERRCODE = 'P0002';
+    END IF;
+
+    SELECT count(*) INTO v_chosen
+    FROM application_choice ac JOIN seat se ON se.seat_id = ac.seat_id
+    WHERE se.eiin = p_eiin;
+    IF v_chosen > 0 THEN
+        RAISE EXCEPTION
+            'School % is chosen by % application(s) and cannot be deleted', p_eiin, v_chosen
+            USING ERRCODE = '23503';
+    END IF;
+
+    SELECT count(*) INTO v_admitted
+    FROM admission_result r JOIN seat se ON se.seat_id = r.admitted_seat_id
+    WHERE se.eiin = p_eiin;
+    IF v_admitted > 0 THEN
+        RAISE EXCEPTION
+            'School % has % admitted/waiting result(s) and cannot be deleted', p_eiin, v_admitted
+            USING ERRCODE = '23503';
+    END IF;
+
+    -- Nothing references it: seat, seat_quota, account and
+    -- school_class_eligibility all cascade from here.
+    DELETE FROM school WHERE eiin = p_eiin;
+END;
+$$;
+
 -- Split a seat's total capacity across all quota types by their default_share,
 -- giving the rounding remainder to the catch-all (is_default) quota. Reused by
 -- sp_add_seat and sp_rebalance_seats, so quota changes are applied consistently.
@@ -247,5 +288,46 @@ BEGIN
     END IF;
 
     DELETE FROM seat WHERE seat_id = p_seat_id;   -- seat_quota cascades
+END;
+$$;
+
+-- Master-admin: remove a school entirely. school -> seat -> seat_quota all
+-- cascade at the FK level, but application_choice.seat_id and
+-- admission_result.admitted_seat_id do NOT (a chosen/admitted seat must not
+-- silently disappear from someone's application). A raw `DELETE FROM school`
+-- would therefore fail with a confusing foreign_key_violation on those tables
+-- the moment any applicant had chosen one of its seats. Check up front and
+-- raise a clear, actionable message instead.
+CREATE OR REPLACE PROCEDURE sp_delete_school(
+    p_eiin TEXT
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_choices INT;
+    v_results INT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM school WHERE eiin = p_eiin) THEN
+        RAISE EXCEPTION 'School % not found', p_eiin USING ERRCODE = 'P0002';
+    END IF;
+
+    SELECT count(*) INTO v_choices
+    FROM application_choice ac JOIN seat se ON se.seat_id = ac.seat_id
+    WHERE se.eiin = p_eiin;
+    IF v_choices > 0 THEN
+        RAISE EXCEPTION 'School % has % application choice(s) referencing its seats and cannot be deleted',
+            p_eiin, v_choices USING ERRCODE = '23503';
+    END IF;
+
+    SELECT count(*) INTO v_results
+    FROM admission_result r JOIN seat se ON se.seat_id = r.admitted_seat_id
+    WHERE se.eiin = p_eiin;
+    IF v_results > 0 THEN
+        RAISE EXCEPTION 'School % has % admission result(s) tied to its seats and cannot be deleted',
+            p_eiin, v_results USING ERRCODE = '23503';
+    END IF;
+
+    -- Nothing references its seats: safe to remove. seat/seat_quota/account/
+    -- school_class_eligibility all cascade from school via FK.
+    DELETE FROM school WHERE eiin = p_eiin;
 END;
 $$;

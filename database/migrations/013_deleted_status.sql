@@ -1,0 +1,27 @@
+-- ============================================================================
+-- 013_deleted_status.sql
+-- Adds the DELETED application status, which completes the deletion cycle:
+-- an applicant raises a request (sp_request_deletion), a master admin approves
+-- it (sp_approve_deletion), and the application is then marked DELETED rather
+-- than being physically removed.
+--
+-- Soft-delete, not DELETE, on purpose:
+--   * the audit trail and the deletion_request row must keep pointing at a real
+--     application row (both FK to it), so history stays readable;
+--   * a deleted application still has to be *visible* to the applicant as
+--     "deleted" when they retrieve their forms.
+--
+-- What DELETED means everywhere else:
+--   * the lottery ignores it (procedures/03_lottery.sql);
+--   * it does not count toward the per-student application cap, nor toward the
+--     one-application-per-area rule, nor toward school reuse — so an applicant
+--     who deletes an application gets that area and those schools back
+--     (triggers/02_rules.sql, procedures/01_application.sql).
+--
+-- This file deliberately contains ONLY the ALTER TYPE. PostgreSQL forbids using
+-- a newly added enum value in the same transaction that added it, and
+-- migrate.js runs each .sql file as one implicit transaction — so every object
+-- that references 'DELETED' lives in a later file.
+-- ============================================================================
+
+ALTER TYPE application_status_t ADD VALUE IF NOT EXISTS 'DELETED';

@@ -1,5 +1,7 @@
 import { NavLink, Route, Routes, Navigate } from 'react-router-dom';
 import { getRole, getToken } from './api/client';
+import { useRoundStatus } from './api/roundStatus';
+import AnnouncementBell from './components/AnnouncementBell.jsx';
 import Home from './pages/Home.jsx';
 import Apply from './pages/Apply.jsx';
 import Seats from './pages/Seats.jsx';
@@ -16,18 +18,36 @@ function RequireRole({ role, children }) {
 }
 
 export default function App() {
+  // The Result link only appears once the admin publishes. The /result route
+  // itself stays mounted (and explains the wait) so an old bookmark or a typed
+  // URL gets an answer rather than a redirect.
+  const { result_ready: resultReady } = useRoundStatus();
+
+  // Shows a bell in the header for whichever staff portal the current login
+  // belongs to. Re-evaluated on every navigation (BrowserRouter re-renders its
+  // whole subtree on route change), so it picks up a fresh login/logout right
+  // away without any extra state plumbing here.
+  const role = getRole();
+  const staffBasePath = getToken() && role === 'SCHOOL_AUTHORITY' ? '/authority'
+    : getToken() && role === 'MASTER_ADMIN' ? '/admin'
+    : null;
+
   return (
     <>
       <header className="site-header">
         <div className="bar">
-          <NavLink to="/" className="brand">🎓 GSA · School Admission</NavLink>
+          <NavLink to="/" className="brand">
+            <span className="brand-seal">GSA</span>
+            <span className="brand-text">School Admission</span>
+          </NavLink>
           <nav>
             <NavLink to="/apply">Apply</NavLink>
             <NavLink to="/seats">Vacant Seats</NavLink>
             <NavLink to="/retrieve">Download / Delete</NavLink>
-            <NavLink to="/result">Result</NavLink>
+            {resultReady && <NavLink to="/result">Result</NavLink>}
             <NavLink to="/recover">Recover ID</NavLink>
-            <NavLink to="/login">Admin / School Authority Login</NavLink>
+            {staffBasePath && <AnnouncementBell basePath={staffBasePath} />}
+            <NavLink to="/login" className="nav-staff">Admin / School Authority Login</NavLink>
           </nav>
         </div>
       </header>

@@ -1,14 +1,22 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api, { apiError } from '../api/client';
+import { useRoundStatus } from '../api/roundStatus';
 import { Alert, Field, Badge } from '../components/ui.jsx';
 
 // Which list an applicant landed on, like the portal's merit / 1st / 2nd
 // waiting lists. Round 1 admits = merit list; later rounds = waiting-list calls.
 function tierLabel(r) {
+  if (r.lifecycle_status === 'FORFEITED') return 'Admission cancelled — certificates not submitted by the deadline';
   if (r.status === 'ADMITTED') return r.round > 1 ? `Waiting list ${r.round - 1} (round ${r.round})` : 'Merit list';
   if (r.status === 'WAITING') return `Waiting list ${r.round || 1}`;
   return '—';
+}
+
+// After the school confirms (ENROLLED) or the seat is forfeited, that is the
+// status that matters to the applicant, not the original lottery outcome.
+function shownStatus(r) {
+  return r.lifecycle_status === 'ENROLLED' || r.lifecycle_status === 'FORFEITED' ? r.lifecycle_status : r.status;
 }
 
 export default function Result() {
@@ -18,6 +26,11 @@ export default function Result() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // The lookup itself is gated in the backend (GET /results/:bc returns 409
+  // until RESULT_READY). This only avoids offering a form that cannot work:
+  // the lottery may already have run, but until the admin publishes there is
+  // nothing here for an applicant.
+  const { result_ready: resultReady, ready } = useRoundStatus();
 
   async function check() {
     setErr(''); setRows(null); setBusy(true);
@@ -26,6 +39,26 @@ export default function Result() {
         { params: track ? { type: track } : {} });
       setRows(data);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
+  }
+
+  if (!ready) return <div className="card"><p className="muted">Loading…</p></div>;
+
+  if (!resultReady) {
+    return (
+      <div className="card">
+        <h2>Check Result</h2>
+        <Alert kind="warn">Results have not been published yet.</Alert>
+        <p className="muted">
+          The result lookup opens here as soon as the admission authority publishes the merit and
+          waiting lists. Until then there is nothing to look up — keep your Applicant ID and birth
+          certificate number ready.
+        </p>
+        <div className="btn-row">
+          <Link to="/"><button className="btn-secondary">Back to home</button></Link>
+          <Link to="/retrieve"><button className="btn-secondary">Download your application</button></Link>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -53,7 +86,7 @@ export default function Result() {
               <tr key={r.application_id}>
                 <td>{r.application_id}</td>
                 <td>{tierLabel(r)}</td>
-                <td><Badge value={r.status} /></td>
+                <td><Badge value={shownStatus(r)} /></td>
                 <td>{r.allocated_quota || '—'}</td>
                 <td>{r.school_name || '—'}</td>
                 <td>{r.school_type ? (r.school_type === 'GOVERNMENT' ? 'Govt' : 'Non-Govt') : '—'}</td>

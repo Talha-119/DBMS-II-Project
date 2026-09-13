@@ -114,3 +114,38 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- True if the bytes look like a real JPEG: the SOI marker (FF D8) opens the
+-- stream and the EOI marker (FF D9) closes it. NULL is "nothing to check", so it
+-- passes — student.photo is optional (see migrations/004_application.sql).
+--
+-- This is a backstop, not the real validation. The upload route decodes the
+-- image with sharp and re-encodes it to JPEG at a fixed size before anything is
+-- written (backend/src/utils/photo.js), so traffic arriving through the API is
+-- already guaranteed to satisfy this. What the function adds is that the
+-- guarantee also holds for direct SQL — the same reason fn_validate_bd_mobile
+-- and fn_check_guardian live in the database rather than in the form.
+--
+-- It deliberately checks only the container markers. Postgres cannot decode an
+-- image, so it cannot tell a real photograph from a JPEG of a blank wall; what
+-- it can cheaply refuse is a PNG, a PDF, a ZIP or a text file sitting in a
+-- column the rest of the system serves as image/jpeg.
+CREATE OR REPLACE FUNCTION fn_is_jpeg(p_image BYTEA)
+RETURNS BOOLEAN
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_len INT;
+BEGIN
+    IF p_image IS NULL THEN
+        RETURN TRUE;
+    END IF;
+    v_len := octet_length(p_image);
+    IF v_len < 4 THEN
+        RETURN FALSE;
+    END IF;
+    RETURN get_byte(p_image, 0)         = 255   -- 0xFF ) start of image
+       AND get_byte(p_image, 1)         = 216   -- 0xD8 )
+       AND get_byte(p_image, v_len - 2) = 255   -- 0xFF ) end of image
+       AND get_byte(p_image, v_len - 1) = 217;  -- 0xD9 )
+END;
+$$;

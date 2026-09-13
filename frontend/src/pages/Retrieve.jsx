@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import api, { apiError } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
@@ -12,10 +12,47 @@ export default function Retrieve() {
   const [code, setCode] = useState('');
   const [token, setToken] = useState('');
   const [apps, setApps] = useState(null);
+  const [notifs, setNotifs] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [photo, setPhoto] = useState('');
   const clear = () => { setErr(''); setMsg(''); };
+
+  // Release the object URL when this page goes away, so the blob is not pinned
+  // in memory for the lifetime of the tab.
+  useEffect(() => () => { if (photo) URL.revokeObjectURL(photo); }, [photo]);
+
+  // The photograph comes back out of Postgres on every load of this page -- it
+  // is not carried over from the apply form and is not in any cache, which is
+  // the point: it demonstrates that the bytes really are in the database. The
+  // endpoint is token-gated, so it is fetched as a blob rather than pointed at
+  // by an <img src>, which could not carry the Authorization header.
+  async function loadPhoto(tok) {
+    try {
+      const res = await axios.get(`/api/applications/student/${encodeURIComponent(bc.trim())}/photo`, {
+        responseType: 'blob', headers: { Authorization: `Bearer ${tok}` },
+      });
+      setPhoto(URL.createObjectURL(res.data));
+    } catch { /* 404 = this applicant never uploaded one; the box stays empty */ }
+  }
+
+  async function loadNotifications(tok) {
+    try {
+      const res = await axios.get('/api/applications/notifications', { headers: { Authorization: `Bearer ${tok}` } });
+      setNotifs(res.data);
+    } catch { /* non-critical: the applications table above still loads fine without it */ }
+  }
+
+  async function markNotifRead(id) {
+    setNotifs((prev) => prev.map((n) => (n.notification_id === id ? { ...n, is_read: true } : n)));
+    try { await axios.post(`/api/applications/notifications/${id}/read`, {}, { headers: { Authorization: `Bearer ${token}` } }); } catch { /* best-effort */ }
+  }
+
+  async function markAllNotifsRead() {
+    setNotifs((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    try { await axios.post('/api/applications/notifications/read-all', {}, { headers: { Authorization: `Bearer ${token}` } }); } catch { /* best-effort */ }
+  }
 
   async function start() {
     clear(); setBusy(true);
@@ -31,6 +68,8 @@ export default function Retrieve() {
     try {
       const { data } = await api.post('/applications/retrieve', { bc_no: bc.trim(), dob, code: code.trim() });
       setToken(data.token); setApps(data.applications);
+      loadNotifications(data.token);
+      loadPhoto(data.token);
     } catch (e) { setErr(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -53,6 +92,7 @@ export default function Retrieve() {
       await axios.post(`/api/applications/${id}/pay`, { method: 'CARD' }, { headers: { Authorization: `Bearer ${token}` } });
       setMsg('Fee paid successfully.');
       setApps((prev) => prev.map((a) => (a.application_id === id ? { ...a, payment_status: 'PAID' } : a)));
+      loadNotifications(token);
     } catch (e) { setErr('Payment failed: ' + apiError(e)); }
   }
 
@@ -94,6 +134,40 @@ export default function Retrieve() {
 
       {apps && (
         <>
+          {notifs.length > 0 && (
+            <div className="card notif-inline">
+              <div className="notif-inline-head">
+                <h3>Announcements</h3>
+                {notifs.some((n) => !n.is_read) && (
+                  <button className="btn-secondary" onClick={markAllNotifsRead}>Mark all read</button>
+                )}
+              </div>
+              <ul className="notif-list">
+                {notifs.map((n) => (
+                  <li
+                    key={n.notification_id}
+                    className={n.is_read ? '' : 'unread'}
+                    onClick={() => !n.is_read && markNotifRead(n.notification_id)}
+                  >
+                    <div className="notif-title">{n.title}</div>
+                    {n.body && <div className="notif-body">{n.body}</div>}
+                    <div className="notif-time">{new Date(n.created_at).toLocaleString()}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="retrieve-photo">
+            <div className={`photo-slot${photo ? '' : ' empty'}`}>
+              {photo ? <img src={photo} alt="Applicant photograph" /> : <span>No photograph</span>}
+            </div>
+            <div className="retrieve-photo-note">
+              {photo
+                ? <>Photograph on file for <b>{bc.trim()}</b>, served from the database. It is part of your locked profile and prints on your applicant copy.</>
+                : <>No photograph is on file for <b>{bc.trim()}</b>. You can attach one to your next application.</>}
+            </div>
+          </div>
+
           {apps.length === 0 && <p className="muted">No applications found.</p>}
           {apps.length > 0 && (
             <table>
@@ -104,7 +178,7 @@ export default function Retrieve() {
                     <td>{a.application_id}</td>
                     <td>{a.desired_class}</td>
                     <td>{a.thana}, {a.district}</td>
-                    <td><Badge value={a.status} /></td>
+                    <td><Badge value={a.lifecycle_status === 'ENROLLED' || a.lifecycle_status === 'FORFEITED' ? a.lifecycle_status : a.status} /></td>
                     <td>{a.payment_status === 'PAID' ? <span className="badge ADMITTED">PAID</span> : <span className="badge WAITING">PENDING</span>}</td>
                     <td>{new Date(a.submitted_at).toLocaleDateString()}</td>
                     <td className="btn-row">

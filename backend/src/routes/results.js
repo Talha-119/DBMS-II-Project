@@ -14,7 +14,8 @@ router.get('/:bc', asyncHandler(async (req, res) => {
   // are kept in both tracks.
   const type = req.query.type || null;
   const { rows } = await query(
-    `SELECT application_id, status, allocated_quota, school_name, school_type, class_level, shift, round
+    `SELECT application_id, status, allocated_quota, school_name, school_type, class_level, shift, round,
+            lifecycle_status
      FROM vw_admission_result
      WHERE bc_no = $1 AND ($2::text IS NULL OR school_type IS NULL OR school_type = $2)
      ORDER BY application_id`, [req.params.bc, type]);

@@ -32,6 +32,26 @@ CREATE TABLE IF NOT EXISTS student (
     permanent_detail    VARCHAR(200) NOT NULL,
     desired_class       INT         NOT NULL REFERENCES class_eligibility(class_level),
     prev_school_name    VARCHAR(120),
+    -- Passport photograph, stored in the database itself rather than on disk, so
+    -- an applicant copy can never reference a file that has gone missing and a
+    -- database dump is the whole record. One photo per birth certificate, which
+    -- is the 1:1 shape this table already has.
+    --
+    -- Nullable on purpose: the identity registries carry no photographs, so a
+    -- student seeded or migrated from before this column existed has none, and a
+    -- photo is not identity-bearing anyway (it is compared against nothing at
+    -- submission time). What IS enforced is that a photo, once set, is frozen
+    -- like the rest of the profile -- see triggers/02_rules.sql.
+    --
+    -- No mime-type column: the upload route re-encodes every accepted image to
+    -- JPEG before it is ever written (backend/src/utils/photo.js), so the
+    -- serving endpoint and the PDF can both assume image/jpeg unconditionally.
+    -- The lower bound is a sanity floor (no JPEG is 100 bytes); the upper bound
+    -- is far above the ~30KB the fixed 300x386 re-encode actually produces, and
+    -- is here so a direct-SQL writer cannot park a megabyte in the row either.
+    photo               BYTEA
+        CONSTRAINT chk_student_photo_size
+        CHECK (photo IS NULL OR octet_length(photo) BETWEEN 100 AND 524288),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- At least one guardian (parent or local) must be present.

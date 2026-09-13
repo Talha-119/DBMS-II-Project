@@ -1,11 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { apiError, logout } from '../api/client';
 import { Alert, Field, Badge } from '../components/ui.jsx';
+import DivisionAnalytics from '../components/admin/DivisionAnalytics.jsx';
+import LotteryResultsViewer from '../components/admin/LotteryResultsViewer.jsx';
+
+// Case-insensitive "does this row contain the typed text in any of these
+// fields" — backs the search box over each long admin table.
+function matchesQuery(row, fields, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return fields.some((f) => String(row[f] ?? '').toLowerCase().includes(needle));
+}
+
+// Green / red state chip for the two switches that govern the public site.
+function StatusLight({ on, onLabel, offLabel }) {
+  return <span className={`status-light ${on ? 'on' : 'off'}`}>{on ? onLabel : offLabel}</span>;
+}
 
 export default function Admin() {
   const nav = useNavigate();
   const [schools, setSchools] = useState([]);
+  const [dash, setDash] = useState(null);
   const [settings, setSettings] = useState([]);
   const [delReqs, setDelReqs] = useState([]);
   const [results, setResults] = useState([]);
@@ -18,18 +34,37 @@ export default function Admin() {
   const [schoolClasses, setSchoolClasses] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [schoolSearch, setSchoolSearch] = useState('');
+  const [resultSearch, setResultSearch] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [announce, setAnnounce] = useState({ audience: 'APPLICANT', eiin: '', title: '', body: '' });
+  const [deadlineInput, setDeadlineInput] = useState('');
 
   async function loadAll() {
     setErr('');
-    try {
-      const [s, st, d, r, a, q, ce, sce] = await Promise.all([
-        api.get('/admin/schools'), api.get('/admin/settings'), api.get('/admin/deletion-requests'),
-        api.get('/admin/results'), api.get('/admin/audit'), api.get('/admin/quota-types'),
-        api.get('/admin/class-eligibility'), api.get('/admin/school-class-eligibility'),
-      ]);
-      setSchools(s.data); setSettings(st.data); setDelReqs(d.data); setResults(r.data); setAudit(a.data);
-      setQuotas(q.data); setClasses(ce.data); setSchoolClasses(sce.data);
-    } catch (e) { setErr(apiError(e)); }
+    // Each panel (schools, lottery/settings, results, ...) is loaded independently:
+    // one failing endpoint (e.g. quota-types) must not blank out the others, since
+    // create/delete school, view schools, run lottery and see results are the
+    // core master-admin features and must keep working even if a side panel errors.
+    const specs = [
+      ['/admin/dashboard', setDash],
+      ['/admin/schools', setSchools],
+      ['/admin/settings', setSettings],
+      ['/admin/deletion-requests', setDelReqs],
+      ['/admin/results', setResults],
+      ['/admin/audit', setAudit],
+      ['/admin/quota-types', setQuotas],
+      ['/admin/class-eligibility', setClasses],
+      ['/admin/school-class-eligibility', setSchoolClasses],
+    ];
+    const outcomes = await Promise.allSettled(specs.map(([url]) => api.get(url)));
+    const failures = [];
+    outcomes.forEach((outcome, i) => {
+      const [url, setter] = specs[i];
+      if (outcome.status === 'fulfilled') setter(outcome.value.data);
+      else failures.push(`${url}: ${apiError(outcome.reason)}`);
+    });
+    if (failures.length) setErr(failures.join(' | '));
   }
 
   async function addQuota(e) {
@@ -72,11 +107,58 @@ export default function Admin() {
     } catch (e) { setErr(apiError(e)); }
   }
 
+  // The draw and its publication are two separate decisions, and the procedure
+  // enforces that: sp_run_lottery writes the allocation but leaves
+  // RESULT_READY false, so nothing reaches applicants until "Publish results"
+  // is pressed. The confirmation says so, and says what re-running costs.
   async function runLottery() {
     setErr(''); setMsg('');
-    if (!window.confirm('Run the admission lottery now? This allocates seats and publishes results.')) return;
-    try { await api.post('/admin/lottery', { round: 1 }); setMsg('Lottery completed and results published.'); loadAll(); }
+    const round = (dash?.current_round || 0) + 1;
+    const rerunWarning = dash?.result_ready
+      ? `\n\nThe currently published result will be UNPUBLISHED, because re-running changes it.`
+      : '';
+    // Past the certificate deadline the run cancels every admission its school
+    // has not confirmed, so say how many before the admin commits to it.
+    const unconfirmed = (dash?.counts.admitted || 0) - (dash?.counts.enrolled || 0);
+    const forfeitWarning = dash?.enroll_deadline && new Date(dash.enroll_deadline) <= new Date() && unconfirmed > 0
+      ? `\n\nThe certificate deadline has passed: ${unconfirmed} admission(s) not confirmed by their school will be CANCELLED and those seats given to the waiting list.`
+      : '';
+    if (!window.confirm(
+      `Run the admission lottery (round ${round}) now?\n\n`
+      + `This closes the application window and allocates seats.${forfeitWarning}${rerunWarning}\n\n`
+      + 'Results are NOT published — applicants will not see them until you press "Publish results".'
+    )) return;
+    try {
+      await api.post('/admin/lottery', { round });
+      setMsg(`Lottery round ${round} completed. Results are saved but NOT published — review them below, then press "Publish results".`);
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
+  }
+
+  async function publishResults() {
+    setErr(''); setMsg('');
+    if (!window.confirm('Publish the results?\n\nEvery applicant will immediately be able to look up their result from the landing page.')) return;
+    try { await api.post('/admin/results/publish'); setMsg('Results published — "Check Result" is now open to applicants.'); loadAll(); }
     catch (e) { setErr(apiError(e)); }
+  }
+
+  async function unpublishResults() {
+    setErr(''); setMsg('');
+    if (!window.confirm('Unpublish the results?\n\n"Check Result" becomes inaccessible again. Applicants who already saw their result will remember it.')) return;
+    try { await api.post('/admin/results/unpublish'); setMsg('Results unpublished — the public result lookup is closed.'); loadAll(); }
+    catch (e) { setErr(apiError(e)); }
+  }
+
+  // One certificate deadline for every school. datetime-local gives a local
+  // time with no zone, so it is sent as an ISO instant.
+  async function saveDeadline(e) {
+    e.preventDefault(); setErr(''); setMsg('');
+    try {
+      await api.post('/admin/enrollment-deadline', { deadline: new Date(deadlineInput).toISOString() });
+      setMsg(`Certificate deadline set to ${new Date(deadlineInput).toLocaleString()}.`);
+      setDeadlineInput('');
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   async function decide(id, approve) {
@@ -85,11 +167,46 @@ export default function Admin() {
     catch (e) { setErr(apiError(e)); }
   }
 
-  async function toggleRound() {
-    const cur = settings.find((s) => s.key === 'ROUND_OPEN')?.value;
-    const value = cur === 'TRUE' ? 'FALSE' : 'TRUE';
-    try { await api.post('/admin/settings', { key: 'ROUND_OPEN', value }); loadAll(); }
-    catch (e) { setErr(apiError(e)); }
+  // (The old toggleRound lived here. It wrote ROUND_OPEN straight through
+  // /admin/settings and labelled itself with the state rather than the action
+  // it performs. setRoundOpen below replaces it: it goes through
+  // sp_set_round_open, confirms first, and pairs with the status chip.)
+
+  // Manual counterpart to the automatic notifications (submit, payment, results,
+  // ...): pushes a one-off announcement straight into an inbox. See
+  // sp_broadcast_notification in database/procedures/04_notifications.sql.
+  async function sendAnnouncement(e) {
+    e.preventDefault(); setErr(''); setMsg('');
+    try {
+      await api.post('/admin/notifications/broadcast', {
+        audience: announce.audience,
+        eiin: announce.audience === 'SCHOOL_AUTHORITY' && announce.eiin ? announce.eiin : undefined,
+        title: announce.title,
+        body: announce.body || undefined,
+      });
+      setMsg(
+        announce.audience === 'APPLICANT'
+          ? 'Announcement sent to every applicant.'
+          : announce.eiin
+          ? `Announcement sent to school ${announce.eiin}.`
+          : 'Announcement sent to every school authority.'
+      );
+      setAnnounce({ audience: announce.audience, eiin: '', title: '', body: '' });
+    } catch (e) { setErr(apiError(e)); }
+  }
+
+  // The button always states the action it performs ("Close applications"),
+  // never the state it is in – the chip beside it carries the state.
+  async function setRoundOpen(open) {
+    setErr(''); setMsg('');
+    if (!window.confirm(open
+      ? 'Open applications? Applicants will be able to submit new forms again.'
+      : 'Close applications? No new form can be submitted until you re-open.')) return;
+    try {
+      await api.post('/admin/round', { open });
+      setMsg(open ? 'Applications are now OPEN.' : 'Applications are now CLOSED.');
+      loadAll();
+    } catch (e) { setErr(apiError(e)); }
   }
 
   async function deleteSchool(eiin) {
@@ -98,6 +215,23 @@ export default function Admin() {
   }
 
   function signOut() { logout(); nav('/login'); }
+
+  // These three tables grow to hundreds of rows on real data, so each gets a
+  // filter box rather than making the admin scroll.
+  const filteredSchools = useMemo(
+    () => schools.filter((s) => matchesQuery(s, ['eiin', 'name', 'postcode'], schoolSearch)),
+    [schools, schoolSearch],
+  );
+  const filteredResults = useMemo(
+    () => results.filter((r) => matchesQuery(
+      r, ['application_id', 'student_name', 'status', 'allocated_quota', 'school_name', 'class_level'], resultSearch,
+    )),
+    [results, resultSearch],
+  );
+  const filteredAudit = useMemo(
+    () => audit.filter((a) => matchesQuery(a, ['log_id', 'table_name', 'action'], auditSearch)),
+    [audit, auditSearch],
+  );
 
   return (
     <>
@@ -108,12 +242,105 @@ export default function Admin() {
         </div>
         {err && <Alert kind="error">{err}</Alert>}
         {msg && <Alert kind="ok">{msg}</Alert>}
-        <div className="btn-row">
-          <button onClick={runLottery}>▶ Run lottery & publish</button>
-          <button className="btn-secondary" onClick={toggleRound}>
-            Toggle round (now: {settings.find((s) => s.key === 'ROUND_OPEN')?.value || '—'})
-          </button>
+
+        {/* Rendered only once the real state is known — a red "Closed" light
+            flashing during the first load would be a lie about the live site. */}
+        {!dash ? <p className="muted">Loading status…</p> : (
+        <div className="ops-grid">
+          {/* Switch 1 — the application window. */}
+          <div className="ops-panel">
+            <div className="ops-head">
+              <span className="ops-title">Applications</span>
+              <StatusLight on={!!dash?.round_open} onLabel="Open" offLabel="Closed" />
+            </div>
+            <p className="help">
+              {dash?.round_open
+                ? 'Applicants can submit new forms right now.'
+                : 'No new form can be submitted. Running the lottery closes this automatically.'}
+            </p>
+            {dash?.round_open
+              ? <button className="btn-danger" onClick={() => setRoundOpen(false)}>Close applications</button>
+              : <button className="btn-ready" onClick={() => setRoundOpen(true)}>Open applications</button>}
+          </div>
+
+          {/* Switch 2 — publication, deliberately independent of the draw. */}
+          <div className="ops-panel">
+            <div className="ops-head">
+              <span className="ops-title">Results</span>
+              <StatusLight on={!!dash?.result_ready} onLabel="Published" offLabel="Not published" />
+            </div>
+            <p className="help">
+              {dash?.result_ready
+                ? 'Applicants can look up their result from the landing page.'
+                : dash?.results_pending_publish
+                  ? `Round ${dash.current_round} is allocated but hidden from applicants — review the results below, then publish.`
+                  : 'Nothing to publish yet. Run the lottery first.'}
+            </p>
+            <div className="btn-row" style={{ marginTop: 0 }}>
+              <button className="btn-secondary" onClick={runLottery}>
+                ▶ Run lottery{dash?.current_round ? ` (round ${dash.current_round + 1})` : ''}
+              </button>
+              {dash?.result_ready
+                ? <button className="btn-danger" onClick={unpublishResults}>Unpublish results</button>
+                : (
+                  <button
+                    className="btn-ready"
+                    onClick={publishResults}
+                    disabled={!dash?.results_pending_publish}
+                    title={dash?.results_pending_publish ? '' : 'Run the lottery first'}
+                  >
+                    Publish results
+                  </button>
+                )}
+            </div>
+          </div>
         </div>
+        )}
+
+        {dash && (
+          <div className="ops-stats">
+            <div><b>{dash.counts.applications}</b><span>Applications</span></div>
+            <div><b>{dash.counts.admitted}</b><span>Admitted</span></div>
+            <div><b>{dash.counts.waiting}</b><span>Waiting</span></div>
+            <div>
+              <b>{dash.current_round || '—'}</b>
+              <span>{dash.last_run_at ? `Last run ${new Date(dash.last_run_at).toLocaleString()}` : 'Rounds run'}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Certificate deadline — one for every school. Passing it cancels
+            nothing by itself; the next lottery round does. */}
+        {dash && (
+          <div className="ops-panel" style={{ marginTop: 16 }}>
+            <div className="ops-head">
+              <span className="ops-title">Certificate deadline</span>
+              <StatusLight
+                on={!!dash.enroll_deadline && new Date(dash.enroll_deadline) > new Date()}
+                onLabel="Open"
+                offLabel={dash.enroll_deadline ? 'Passed' : 'Not set'}
+              />
+            </div>
+            <p className="help">
+              {dash.enroll_deadline
+                ? `Admitted students must hand their certificates to the school by ${new Date(dash.enroll_deadline).toLocaleString()}. `
+                  + `${dash.counts.enrolled} of ${dash.counts.admitted} admissions confirmed so far. Running the next lottery round after `
+                  + 'this deadline cancels every unconfirmed admission and gives its seat to the waiting list.'
+                : 'No deadline set. Set one after publishing results. Unconfirmed admissions are only cancelled by a lottery round run after the deadline.'}
+            </p>
+            <form onSubmit={saveDeadline} className="row">
+              {/* Date only; the deadline is the end of that day (11:59 PM local). */}
+              <Field label="Deadline date (until 11:59 PM)">
+                <input
+                  type="date"
+                  value={deadlineInput.slice(0, 10)}
+                  onChange={(e) => setDeadlineInput(e.target.value ? `${e.target.value}T23:59` : '')}
+                />
+              </Field>
+              <div style={{ alignSelf: 'end' }}><button type="submit" disabled={!deadlineInput}>Set deadline</button></div>
+            </form>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -125,10 +352,20 @@ export default function Admin() {
           <div style={{ alignSelf: 'end' }}><button type="submit">Create</button></div>
         </form>
         {created && <Alert kind="ok">Created EIIN <b>{created.eiin}</b> — temporary password <b>{created.temp_password}</b> (shown once).</Alert>}
+        <Field label="Search schools">
+          <input
+            value={schoolSearch}
+            onChange={(e) => setSchoolSearch(e.target.value)}
+            placeholder="Search by EIIN, name, or postcode…"
+          />
+        </Field>
         <table style={{ marginTop: 12 }}>
           <thead><tr><th>EIIN</th><th>Name</th><th>Postcode</th><th>Seats left</th><th>Admitted</th><th></th></tr></thead>
           <tbody>
-            {schools.map((s) => (
+            {filteredSchools.length === 0 && (
+              <tr><td colSpan={6} className="muted">No schools match “{schoolSearch}”.</td></tr>
+            )}
+            {filteredSchools.map((s) => (
               <tr key={s.eiin}><td>{s.eiin}</td><td>{s.name}</td><td>{s.postcode}</td><td>{s.seats_remaining}</td><td>{s.admitted_count}</td>
                 <td><button className="btn-danger" onClick={() => deleteSchool(s.eiin)}>Delete</button></td></tr>
             ))}
@@ -208,6 +445,54 @@ export default function Admin() {
           )}
       </div>
 
+      {/* Restored: this panel was dropped by a merge, leaving sendAnnouncement
+          and its state wired to nothing, so /admin/notifications/broadcast and
+          sp_broadcast_notification were unreachable from the UI. */}
+      <div className="card">
+        <h3>Send announcement</h3>
+        <p className="help">
+          Pushes an announcement straight into the inbox: applicants see it on the Download / Delete
+          Application page, school authorities see it under the megaphone in the header.
+        </p>
+        <form onSubmit={sendAnnouncement}>
+          <div className="row">
+            <Field label="Audience">
+              <select
+                value={announce.audience}
+                onChange={(e) => setAnnounce({ ...announce, audience: e.target.value, eiin: '' })}
+              >
+                <option value="APPLICANT">All applicants</option>
+                <option value="SCHOOL_AUTHORITY">School authority</option>
+              </select>
+            </Field>
+            {announce.audience === 'SCHOOL_AUTHORITY' && (
+              <Field label="School EIIN (blank = every school)">
+                <input
+                  value={announce.eiin}
+                  onChange={(e) => setAnnounce({ ...announce, eiin: e.target.value })}
+                  placeholder="e.g. 108103"
+                />
+              </Field>
+            )}
+            <Field label="Title">
+              <input
+                value={announce.title}
+                onChange={(e) => setAnnounce({ ...announce, title: e.target.value })}
+                placeholder="e.g. Portal maintenance tonight"
+              />
+            </Field>
+          </div>
+          <Field label="Body (optional)">
+            <textarea
+              rows={3}
+              value={announce.body}
+              onChange={(e) => setAnnounce({ ...announce, body: e.target.value })}
+            />
+          </Field>
+          <button type="submit" disabled={!announce.title.trim()}>Send announcement</button>
+        </form>
+      </div>
+
       <div className="card">
         <h3>Pending deletion requests ({delReqs.length})</h3>
         {delReqs.length === 0 && <p className="muted">None.</p>}
@@ -231,10 +516,20 @@ export default function Admin() {
 
       <div className="card">
         <h3>Results ({results.length})</h3>
+        <Field label="Search results">
+          <input
+            value={resultSearch}
+            onChange={(e) => setResultSearch(e.target.value)}
+            placeholder="Search by applicant, student, status, quota, school, or class…"
+          />
+        </Field>
         <table>
           <thead><tr><th>Applicant</th><th>Student</th><th>Status</th><th>Quota</th><th>School</th><th>Class</th></tr></thead>
           <tbody>
-            {results.map((r) => (
+            {filteredResults.length === 0 && (
+              <tr><td colSpan={6} className="muted">No results match “{resultSearch}”.</td></tr>
+            )}
+            {filteredResults.map((r) => (
               <tr key={r.application_id}><td>{r.application_id}</td><td>{r.student_name}</td><td><Badge value={r.status} /></td><td>{r.allocated_quota || '—'}</td><td>{r.school_name || '—'}</td><td>{r.class_level || '—'}</td></tr>
             ))}
           </tbody>
@@ -243,14 +538,32 @@ export default function Admin() {
 
       <div className="card">
         <h3>Recent audit log (triggers)</h3>
+        <Field label="Search audit log">
+          <input
+            value={auditSearch}
+            onChange={(e) => setAuditSearch(e.target.value)}
+            placeholder="Search by table or action…"
+          />
+        </Field>
         <table>
           <thead><tr><th>#</th><th>Table</th><th>Action</th><th>At</th></tr></thead>
           <tbody>
-            {audit.map((a) => (
+            {filteredAudit.length === 0 && (
+              <tr><td colSpan={4} className="muted">No entries match “{auditSearch}”.</td></tr>
+            )}
+            {filteredAudit.map((a) => (
               <tr key={a.log_id}><td>{a.log_id}</td><td>{a.table_name}</td><td>{a.action}</td><td>{new Date(a.at).toLocaleString()}</td></tr>
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="card">
+        <DivisionAnalytics />
+      </div>
+
+      <div className="card">
+        <LotteryResultsViewer />
       </div>
     </>
   );

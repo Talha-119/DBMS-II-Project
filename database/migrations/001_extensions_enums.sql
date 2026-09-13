@@ -39,7 +39,7 @@ END $$;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'application_status_t') THEN
         CREATE TYPE application_status_t AS ENUM
-            ('SUBMITTED', 'CANCELLED', 'ADMITTED', 'WAITING', 'NOT_ADMITTED');
+            ('SUBMITTED', 'CANCELLED', 'ADMITTED', 'WAITING', 'NOT_ADMITTED', 'DELETED');
     END IF;
 END $$;
 

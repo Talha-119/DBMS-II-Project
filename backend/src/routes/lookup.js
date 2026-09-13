@@ -90,31 +90,57 @@ router.get('/eligible-classes', asyncHandler(async (req, res) => {
 }));
 
 // Schools (optionally in a postcode / of a track) for the cascading selector.
+// Pass `bc` to drop schools this student already holds in a live application —
+// they cannot be chosen again, so listing them only invites a rejected submit.
 router.get('/schools', asyncHandler(async (req, res) => {
-  const { postcode, type } = req.query;
+  const { postcode, type, bc } = req.query;
   const { rows } = await query(
-    `SELECT * FROM vw_area_schools
-     WHERE ($1::text IS NULL OR postcode = $1)
-       AND ($2::text IS NULL OR school_type = $2)
+    `SELECT * FROM vw_area_schools v
+     WHERE ($1::text IS NULL OR v.postcode = $1)
+       AND ($2::text IS NULL OR v.school_type = $2)
+       AND ($3::text IS NULL OR v.eiin NOT IN (SELECT eiin FROM fn_schools_used_by($3)))
      ORDER BY division, district, thana, name`,
-    [postcode || null, type || null]);
+    [postcode || null, type || null, bc || null]);
   res.json(rows);
 }));
 
 // Available seats in an area for a class, gender-compatible, capacity > 0.
+// `bc` filters out schools already used by that student, same as /schools.
 router.get('/seats', asyncHandler(async (req, res) => {
-  const { postcode, gender, type } = req.query;
+  const { postcode, gender, type, bc } = req.query;
   const cls = req.query.class;
   const { rows } = await query(
-    `SELECT * FROM vw_seat_availability
-     WHERE ($1::text IS NULL OR postcode = $1)
-       AND ($2::int  IS NULL OR class_level = $2)
-       AND ($3::text IS NULL OR seat_gender::text = 'BOTH' OR seat_gender::text = $3)
-       AND ($4::text IS NULL OR school_type = $4)
-       AND total_available > 0
+    `SELECT * FROM vw_seat_availability v
+     WHERE ($1::text IS NULL OR v.postcode = $1)
+       AND ($2::int  IS NULL OR v.class_level = $2)
+       AND ($3::text IS NULL OR v.seat_gender::text = 'BOTH' OR v.seat_gender::text = $3)
+       AND ($4::text IS NULL OR v.school_type = $4)
+       AND ($5::text IS NULL OR v.eiin NOT IN (SELECT eiin FROM fn_schools_used_by($5)))
+       AND v.total_available > 0
      ORDER BY school_name, shift`,
-    [postcode || null, cls || null, gender || null, type || null]);
+    [postcode || null, cls || null, gender || null, type || null, bc || null]);
   res.json(rows);
+}));
+
+// What the application limits leave this applicant: how many applications they
+// may still file, which areas are spent, and which schools are spent. The apply
+// form uses this to grey out spent areas up front instead of letting the
+// student fill a whole form the database will refuse at the end.
+//
+// Works for a first-time applicant too (all zeroes), so it never 404s.
+router.get('/applicant-limits/:bc', asyncHandler(async (req, res) => {
+  const bc = req.params.bc;
+  const { rows } = await query('SELECT * FROM fn_applicant_limits($1)', [bc]);
+  const r = rows[0];
+  res.json({
+    bc_no: bc,
+    max_applications: r.max_applications,
+    applications_used: r.applications_used,
+    applications_remaining: r.applications_remaining,
+    applications_deleted: r.applications_deleted,
+    used_postcodes: r.used_postcodes || [],
+    used_schools: r.used_schools || [],
+  });
 }));
 
 // Public round status: is the admission round open, and are results published?
@@ -122,12 +148,13 @@ router.get('/seats', asyncHandler(async (req, res) => {
 router.get('/round-status', asyncHandler(async (_req, res) => {
   const { rows } = await query(
     `SELECT key, value FROM app_setting
-     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND')`);
+     WHERE key IN ('ROUND_OPEN', 'RESULT_READY', 'CURRENT_ROUND', 'ENROLL_DEADLINE')`);
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   res.json({
     round_open: s.ROUND_OPEN === 'TRUE',
     result_ready: s.RESULT_READY === 'TRUE',
     current_round: parseInt(s.CURRENT_ROUND || '0', 10),
+    enroll_deadline: s.ENROLL_DEADLINE || null,
   });
 }));
 
@@ -153,7 +180,12 @@ router.get('/student/:bc', asyncHandler(async (req, res) => {
   const { rows } = await query(
     `SELECT bc_no, religion, mobile, father_nid, mother_nid, local_guardian_nid,
             present_postcode, present_detail, permanent_postcode, permanent_detail,
-            desired_class, prev_school_name
+            desired_class, prev_school_name,
+            -- Whether a photograph is on file, never the photograph itself: the
+            -- form only needs to know that the upload slot is already filled and
+            -- locked. The image is served separately, and behind a token, by
+            -- GET /api/applications/student/:bc/photo.
+            (photo IS NOT NULL) AS has_photo
      FROM student WHERE bc_no = $1`, [req.params.bc]);
   if (!rows.length) return res.status(404).json({ error: 'No existing profile' });
   res.json(rows[0]);
